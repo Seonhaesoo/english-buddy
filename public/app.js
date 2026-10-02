@@ -359,6 +359,7 @@ async function ask(text, { hidden = false } = {}) {
 // ------------------------------------------------------------------ 버튼
 
 orb.addEventListener('click', () => {
+  if (S.serverUp === false) return startServerViaTermux();
   if (!S.started) {
     S.started = true;
     S.handsFree = true;
@@ -471,13 +472,25 @@ async function checkServer() {
     $('model').value = s.model;
     conn.className = 'conn ok';
     showStats(s.totals);
+    if (!S.serverUp) { S.serverUp = true; if (S.mode === 'idle' || S.mode === 'paused') setMode(S.mode, ''); }
   } catch {
-    conn.textContent = '서버 꺼짐 — 홈 화면의 English Buddy 아이콘으로 켜주세요';
+    conn.textContent = '서버 꺼짐';
     conn.className = 'conn bad';
+    S.serverUp = false;
+    if (!S.rec && S.mode !== 'speaking') {
+      orb.className = 'orb paused';
+      orbLabel.innerHTML = '탭해서<br>서버 켜기';
+      live.textContent = 'Termux가 잠깐 열렸다가 자동으로 돌아와요';
+    }
   }
 }
+// 서버 켜기: Termux 를 열면 ~/.bashrc 가 서버를 켜고 이 앱을 다시 연다
+function startServerViaTermux() {
+  location.href = 'intent:#Intent;component=com.termux/.app.TermuxActivity;end';
+}
+document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && checkServer());
 checkServer();
-setInterval(checkServer, 15000);
+setInterval(checkServer, 5000);
 setListenLang('ko-KR');
 setMode('idle', SR ? '' : '이 브라우저는 음성 인식을 지원하지 않아요. 크롬을 써주세요.');
 
