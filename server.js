@@ -223,6 +223,49 @@ class Tutor {
 
 const tutor = new Tutor();
 
+// ---------------------------------------------------------------- Gemini 음성 (TTS)
+// GEMINI_API_KEY 가 있으면 사람 같은 AI 음성으로 읽어준다. 없으면 폰 기본 음성 사용.
+const TTS_MODEL = 'gemini-3.8-flash-tts';
+const TTS_VOICES = ['Kore', 'Leda', 'Aoede', 'Callirrhoe', 'Despina', 'Puck', 'Charon', 'Fenrir', 'Orus', 'Achird'];
+const TTS_STYLE = 'a warm, patient, friendly English tutor talking to a Korean beginner; clear and calm; natural Korean, and clear standard American English for English words';
+const ttsCache = new Map(); // 같은 문장 다시 읽을 때 무료 사용량 아끼기
+
+function ttsVoice() {
+  const v = loadSettings().voice;
+  return TTS_VOICES.includes(v) ? v : 'Kore';
+}
+
+async function synthesize(text) {
+  const voice = ttsVoice();
+  const key = voice + '|' + text;
+  if (ttsCache.has(key)) return ttsCache.get(key);
+  const r = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
+    method: 'POST',
+    headers: { 'x-goog-api-key': process.env.GEMINI_API_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: TTS_MODEL,
+      input: [{
+        type: 'user_input',
+        content: [{ type: 'text', text, annotations: [{ type: 'speech_metadata', style: TTS_STYLE }] }],
+      }],
+      response_format: { type: 'audio' },
+      generation_config: { speech_config: [{ voice }] },
+    }),
+  });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(`Gemini TTS ${r.status}: ${body.error?.message || JSON.stringify(body).slice(0, 200)}`);
+  const audio = (body.steps || [])
+    .filter((st) => st.type === 'model_output')
+    .flatMap((st) => st.content || [])
+    .filter((c) => c.type === 'audio')
+    .pop();
+  if (!audio?.data) throw new Error('Gemini TTS: 오디오 없음');
+  const wav = Buffer.from(audio.data, 'base64');
+  ttsCache.set(key, wav);
+  if (ttsCache.size > 200) ttsCache.delete(ttsCache.keys().next().value);
+  return wav;
+}
+
 // ---------------------------------------------------------------- HTTP
 
 const MIME = {
@@ -312,8 +355,28 @@ const server = http.createServer(async (req, res) => {
       if (tutor.q) { try { await tutor.q.setModel(model); } catch { tutor.stop(); } }
       return json(res, 200, { ok: true, model });
     }
+    if (req.method === 'POST' && req.url === '/api/tts') {
+      if (!process.env.GEMINI_API_KEY) return json(res, 404, { error: 'no tts key' });
+      const { text } = JSON.parse((await readBody(req)) || '{}');
+      if (!text?.trim()) return json(res, 400, { error: 'empty' });
+      try {
+        const wav = await synthesize(text.trim());
+        res.writeHead(200, { 'Content-Type': 'audio/wav', 'Content-Length': wav.length });
+        return res.end(wav);
+      } catch (err) {
+        console.error('[tts]', err.message);
+        return json(res, 502, { error: err.message });
+      }
+    }
+    if (req.method === 'POST' && req.url === '/api/voice') {
+      const { voice } = JSON.parse((await readBody(req)) || '{}');
+      if (!TTS_VOICES.includes(voice)) return json(res, 400, { error: 'unknown voice' });
+      fs.writeFileSync(SETTINGS_FILE, JSON.stringify({ ...loadSettings(), voice }));
+      return json(res, 200, { ok: true, voice });
+    }
     if (req.method === 'GET' && req.url === '/api/status') {
-      return json(res, 200, { ok: true, model: MODEL, busy: !!tutor.turn, active: !!tutor.abort, totals: tutor.totals });
+      return json(res, 200, { ok: true, model: MODEL, busy: !!tutor.turn, active: !!tutor.abort, totals: tutor.totals,
+        tts: process.env.GEMINI_API_KEY ? { voice: ttsVoice(), voices: TTS_VOICES } : null });
     }
     if (req.method === 'GET') return serveStatic(req, res);
     json(res, 405, { error: 'method not allowed' });

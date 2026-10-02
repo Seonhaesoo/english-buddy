@@ -183,6 +183,34 @@ function wakeAudio() {
   });
 }
 
+// ---- Gemini AI 음성: 서버(/api/tts)에서 wav 를 받아 재생. 실패하면 폰 기본 음성으로.
+function fetchTTS(text) {
+  if (!S.tts) return Promise.resolve(null);
+  return fetch('/api/tts', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }),
+  }).then((r) => (r.ok ? r.blob() : null)).catch(() => null);
+}
+
+function playBlob(blob, rateMul) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(blob);
+    const a = new Audio(url);
+    // 속도 슬라이더 0.85 = AI 음성의 원래 속도
+    a.playbackRate = Math.min(1.5, Math.max(0.5, (S.rate / 0.85) * rateMul));
+    const done = () => { URL.revokeObjectURL(url); if (S.audioEl === a) { S.audioEl = null; S.audioDone = null; } resolve(); };
+    S.audioEl = a;
+    S.audioDone = done;
+    a.onended = a.onerror = done;
+    a.play().catch(done);
+  });
+}
+
+async function speakText(text, rateMul = 1, audioPromise) {
+  const blob = await (audioPromise || fetchTTS(text));
+  if (blob) return playBlob(blob, rateMul);
+  return speakChunk(text, rateMul);
+}
+
 let speaking = false;
 async function pumpSpeech() {
   if (speaking) return;
@@ -190,7 +218,8 @@ async function pumpSpeech() {
   while (S.speakQueue.length) {
     if (S.mode !== 'speaking') setMode('speaking');
     if (S.needWake) { S.needWake = false; await wakeAudio(); }
-    await speakChunk(S.speakQueue.shift());
+    const item = S.speakQueue.shift();
+    await speakText(item.text, 1, item.audio);
     if (S.mode !== 'speaking') { speaking = false; return; } // 사용자가 끊음
   }
   speaking = false;
@@ -200,13 +229,15 @@ async function pumpSpeech() {
 function enqueueSpeech(text) {
   text = text.trim();
   if (!text) return;
-  S.speakQueue.push(text);
+  // AI 음성이면 재생 순서가 오기 전에 미리 받아둔다
+  S.speakQueue.push({ text, audio: S.tts ? fetchTTS(text) : null });
   pumpSpeech();
 }
 
 function stopSpeech() {
   S.speakQueue = [];
   synth && synth.cancel();
+  if (S.audioEl) { S.audioEl.pause(); S.audioDone?.(); }
 }
 
 function afterSpeech() {
@@ -296,6 +327,8 @@ async function ask(text, { hidden = false } = {}) {
   const bubble = addMsg('tutor', '');
   let full = '';
   let pending = ''; // 아직 문장이 안 끝난 부분
+  let rest = '';    // AI 음성일 때 첫 문장 뒤를 모아두는 곳
+  let firstSent = false;
 
   try {
     const res = await fetch('/api/chat', {
@@ -326,7 +359,10 @@ async function ask(text, { hidden = false } = {}) {
           // 문장이 끝날 때마다 바로 읽기 시작 → 답이 다 오기 전에 말하기 시작
           let m;
           while ((m = /^([\s\S]*?[.!?])\s+/.exec(pending))) {
-            enqueueSpeech(stripTags(m[1]));
+            // AI 음성: 첫 문장만 바로 읽고, 나머지는 모아서 한 번에 (무료 사용량 절약)
+            if (!S.tts || !firstSent) enqueueSpeech(stripTags(m[1]));
+            else rest += m[1] + ' ';
+            firstSent = true;
             pending = pending.slice(m[0].length);
           }
         } else if (ev === 'done') {
@@ -338,7 +374,7 @@ async function ask(text, { hidden = false } = {}) {
     }
     const tags = [...full.matchAll(LANG_TAG)];
     setListenLang(tags.length && tags[tags.length - 1][1] === 'en' ? 'en-US' : 'ko-KR');
-    enqueueSpeech(stripTags(pending));
+    enqueueSpeech(stripTags(rest + pending));
     full = stripTags(full);
     bubble.textContent = full;
     S.lastReply = full.trim();
@@ -383,10 +419,15 @@ $('btnSlow').addEventListener('click', async () => {
   stopSpeech();
   setMode('speaking', '천천히 다시…');
   await wakeAudio();
-  const parts = S.lastReply.match(/[^.!?]+[.!?]*/g) || [S.lastReply];
-  for (const p of parts) {
-    await speakChunk(p.trim(), 0.75);
+  if (S.tts) {
+    await speakText(S.lastReply, 0.75);
     if (S.mode !== 'speaking') return;
+  } else {
+    const parts = S.lastReply.match(/[^.!?]+[.!?]*/g) || [S.lastReply];
+    for (const p of parts) {
+      await speakChunk(p.trim(), 0.75);
+      if (S.mode !== 'speaking') return;
+    }
   }
   afterSpeech();
 });
@@ -396,8 +437,7 @@ $('btnPreview').addEventListener('click', async () => {
   stopSpeech();
   unlockAudio();
   await wakeAudio();
-  await speakChunk("Hi! Nice to meet you. How was your day?");
-  await speakChunk('안녕하세요! 천천히 같이 연습해요.');
+  await speakText('안녕하세요! 오늘 하루 어땠어요? How was your day?');
 });
 
 $('btnKo').addEventListener('click', () => {
@@ -444,6 +484,14 @@ $('btDelay').addEventListener('input', (e) => {
   try { localStorage.setItem('btDelay', S.btDelay); } catch {}
 });
 
+$('aiVoice').addEventListener('change', async (e) => {
+  await fetch('/api/voice', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ voice: e.target.value }),
+  }).catch(() => {});
+  $('btnPreview').click();
+});
+
 $('model').addEventListener('change', async (e) => {
   const r = await fetch('/api/model', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -461,6 +509,13 @@ async function checkServer() {
     const s = await r.json();
     conn.textContent = '서버 연결됨 · ' + (s.model === 'haiku' ? '빠른 응답' : '꼼꼼한 교정');
     $('model').value = s.model;
+    S.tts = !!s.tts;
+    $('aiVoiceRow').hidden = !s.tts;
+    if (s.tts && !$('aiVoice').options.length) {
+      $('aiVoice').innerHTML = s.tts.voices.map((v) => '<option>' + v + '</option>').join('');
+    }
+    if (s.tts && document.activeElement !== $('aiVoice')) $('aiVoice').value = s.tts.voice;
+    $('sysVoices').hidden = !!s.tts;
     conn.className = 'conn ok';
     showStats(s.totals);
     if (!S.serverUp) { S.serverUp = true; if (S.mode === 'idle' || S.mode === 'paused') setMode(S.mode, ''); }
