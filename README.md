@@ -27,18 +27,17 @@ claude setup-token
    `CLAUDE_CODE_OAUTH_TOKEN=` 뒤에 토큰 붙여넣기 → `Ctrl+O` 엔터 → `Ctrl+X`
 4. 안드로이드 설정 → 앱 → Termux → 배터리 → **제한 없음** (안 하면 서버가 꺼져요)
 
-## 3. 홈 화면 아이콘 (한 번)
-1. **Termux:Widget** 설치 (F-Droid: https://f-droid.org/packages/com.termux.widget/)
-2. Termux에서 아래 명령:
+## 3. 앱 아이콘 만들기 (한 번)
+1. Termux에서 아래 명령 → 서버가 켜지고 앱 화면이 열림
    ```bash
-   proot-distro login debian -- bash -c "cd ~/english-tutor && git pull" && proot-distro login debian -- cat /root/english-tutor/install-shortcuts.sh | bash
+   proot-distro login debian -- cat /root/english-tutor/install-shortcuts.sh | bash && bash "$HOME/.shortcuts/tasks/English Buddy"
    ```
-3. 홈 화면 길게 누르기 → 위젯 → **Termux:Widget** → 바로가기 **English Buddy** / **English Buddy 끄기** 추가
+2. 크롬 메뉴 ⋮ → **홈 화면에 추가** (또는 "앱 설치")
 
 ## 4. 매일 쓰기
-1. 홈 화면 **English Buddy** 아이콘 탭 → 서버가 자동으로 켜지고 앱이 열려요
-2. 큰 동그라미 탭 → 선생님이 먼저 말을 걸어요
-3. 다 쓰면 **English Buddy 끄기** 아이콘 (또는 앱 아래 "서버 끄기")
+- 홈 화면 **English** 아이콘 탭 → 큰 동그라미 탭 → 선생님이 말을 걸어요
+- 서버는 계속 켜져 있지만, Claude는 대화할 때만 돌아요 (15분 쉬면 자동으로 쉼 → 배터리 거의 안 씀)
+- 폰을 재부팅했거나 "서버 꺼짐"이 보이면: 동그라미 탭 → Termux가 열리면서 자동으로 켜짐
 
 | 화면 | 의미 |
 |---|---|
