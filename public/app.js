@@ -435,15 +435,6 @@ $('btnReset').addEventListener('click', async () => {
   setMode('idle', '');
 });
 
-$('btnOff').addEventListener('click', async () => {
-  if (!confirm('서버를 끌까요? 다음엔 홈 화면의 English Buddy 아이콘으로 다시 켜면 돼요.')) return;
-  if (S.rec) { S.mode = 'idle'; stopListening(); }
-  stopSpeech();
-  await fetch('/api/shutdown', { method: 'POST' }).catch(() => {});
-  setMode('paused', '서버를 껐어요. 이 창은 닫아도 돼요.');
-  checkServer();
-});
-
 $('btDelay').value = S.btDelay;
 const showBt = () => ($('btOut').textContent = (S.btDelay / 1000).toFixed(1) + '초');
 showBt();

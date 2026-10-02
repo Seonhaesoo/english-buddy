@@ -16,6 +16,7 @@ const MODELS = ['sonnet', 'haiku']; // sonnet = 더 똑똑한 교정(기본), ha
 function loadSettings() {
   try { return JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')); } catch { return {}; }
 }
+const IDLE_MS = 15 * 60 * 1000; // 15분 동안 대화 없으면 Claude 세션 종료
 let MODEL = process.env.TUTOR_MODEL_OVERRIDE || loadSettings().model || 'sonnet';
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const ENV_FILE = path.join(__dirname, '.env');
@@ -99,7 +100,28 @@ class Tutor {
     this.turn = null;        // 현재 진행 중인 턴 { onDelta, resolve, reject, text }
     this.abort = null;
     this.totals = { turns: 0, inputTokens: 0, outputTokens: 0, costUsd: 0 };
-    this.start();
+    this.idleTimer = null;
+    // Claude 세션은 첫 대화 때 켜고, 한동안 대화가 없으면 꺼서 배터리를 아낀다
+  }
+
+  stop() {
+    clearTimeout(this.idleTimer);
+    const old = this.abort;
+    this.abort = null;
+    this.q = null;
+    old?.abort();
+    if (this.turn) this.turn.reject(new Error('session stopped'));
+    this.turn = null;
+    this.inbox = [];
+    this.wake = null;
+  }
+
+  armIdle() {
+    clearTimeout(this.idleTimer);
+    this.idleTimer = setTimeout(() => {
+      console.log('[tutor] idle → Claude 세션 종료 (다음 대화 때 자동으로 다시 켜짐)');
+      this.stop();
+    }, IDLE_MS);
   }
 
   start() {
@@ -157,6 +179,7 @@ class Tutor {
           this.totals.outputTokens += stats.outputTokens;
           this.totals.costUsd += stats.costUsd;
           this.turn = null;
+          this.armIdle();
           if (turn.error) turn.reject(new Error(turn.error));
           else if (msg.subtype === 'success' && !msg.is_error) turn.resolve({ text: turn.text, stats });
           else turn.reject(new Error(msg.errors?.join(', ') || msg.result || msg.subtype));
@@ -178,6 +201,8 @@ class Tutor {
 
   say(text, onDelta) {
     if (this.turn) return Promise.reject(new Error('busy'));
+    if (!this.abort) this.start();
+    clearTimeout(this.idleTimer);
     return new Promise((resolve, reject) => {
       this.turn = { onDelta, resolve, reject, text: '' };
       this.inbox.push({
@@ -191,15 +216,8 @@ class Tutor {
   }
 
   reset() {
-    const old = this.abort;
-    this.abort = null;
-    old.abort();
-    if (this.turn) this.turn.reject(new Error('reset'));
-    this.turn = null;
-    this.inbox = [];
-    this.wake = null;
+    this.stop();
     this.totals = { turns: 0, inputTokens: 0, outputTokens: 0, costUsd: 0 };
-    this.start();
   }
 }
 
@@ -291,11 +309,11 @@ const server = http.createServer(async (req, res) => {
       if (!MODELS.includes(model)) return json(res, 400, { error: 'unknown model' });
       MODEL = model;
       fs.writeFileSync(SETTINGS_FILE, JSON.stringify({ ...loadSettings(), model }));
-      try { await tutor.q.setModel(model); } catch { tutor.reset(); }
+      if (tutor.q) { try { await tutor.q.setModel(model); } catch { tutor.stop(); } }
       return json(res, 200, { ok: true, model });
     }
     if (req.method === 'GET' && req.url === '/api/status') {
-      return json(res, 200, { ok: true, model: MODEL, busy: !!tutor.turn, totals: tutor.totals });
+      return json(res, 200, { ok: true, model: MODEL, busy: !!tutor.turn, active: !!tutor.abort, totals: tutor.totals });
     }
     if (req.method === 'GET') return serveStatic(req, res);
     json(res, 405, { error: 'method not allowed' });
