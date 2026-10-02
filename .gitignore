@@ -3,3 +3,4 @@ node_modules/
 learner.md
 .claude/settings.local.json
 settings.json
+progress.json

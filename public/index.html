@@ -10,50 +10,101 @@
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <header>
-    <div class="title">English Buddy</div>
+  <!-- 홈: 레벨, 다음 수업, 시작 버튼, 지난 수업 -->
+  <section id="home" class="screen">
+    <header class="top">
+      <div class="title">English Buddy</div>
+      <button id="btnSettings" class="icon-btn" aria-label="설정">⚙</button>
+    </header>
     <div id="conn" class="conn">연결 확인 중…</div>
-  </header>
 
-  <main>
-    <button id="orb" class="orb idle" aria-label="대화 버튼">
-      <span class="ring"></span>
-      <span id="orbLabel" class="orb-label">탭해서<br>시작</span>
-    </button>
-    <div id="live" class="live" aria-live="polite"></div>
-  </main>
-
-  <section id="log" class="log" aria-label="대화 기록"></section>
-
-  <nav class="controls">
-    <button id="btnSlow" title="마지막 말 천천히 다시">🐢<span>천천히 다시</span></button>
-    <button id="btnKo" title="한국어로 한 번 말하기">🇰🇷<span>한국어로</span></button>
-    <button id="btnPause" title="자동 듣기 켜고 끄기">⏸<span>일시정지</span></button>
-    <button id="btnReset" title="새 대화">↺<span>새 대화</span></button>
-  </nav>
-
-  <footer>
-    <label class="rate">말하기 속도
-      <input id="rate" type="range" min="0.6" max="1.1" step="0.05" value="0.85">
-      <output id="rateOut">0.85</output>
-    </label>
-    <details class="voices">
-      <summary>설정</summary>
-      <label>선생님 모드 <select id="model">
-        <option value="sonnet">꼼꼼한 교정 (추천)</option>
-        <option value="haiku">빠른 응답</option>
-      </select></label>
-      <label>블루투스 대기 <input id="btDelay" type="range" min="0" max="2000" step="100" value="800"><output id="btOut">0.8초</output></label>
-      <label id="aiVoiceRow" hidden>AI 목소리 <select id="aiVoice"></select></label>
-      <div id="ttsUsage" class="usage"></div>
-      <div id="sysVoices">
-        <label>영어 목소리 <select id="voiceEn"></select></label>
-        <label>한국어 목소리 <select id="voiceKo"></select></label>
+    <div class="card level-card">
+      <div class="label">내 레벨</div>
+      <div class="level-row">
+        <div id="levelNum" class="level-num">-</div>
+        <div class="level-max">/ 10</div>
       </div>
-      <button id="btnPreview" type="button">▶ 미리듣기</button>
-    </details>
-    <div id="stats" class="stats"></div>
-  </footer>
+      <div id="levelBar" class="level-bar"></div>
+      <div id="levelDesc" class="level-desc">첫 수업에서 레벨을 알아봐요</div>
+    </div>
+
+    <div class="card next-card">
+      <div class="label" id="nextLabel">1번째 수업</div>
+      <div id="nextFocus" class="next-focus">자기소개와 오늘 하루 이야기</div>
+    </div>
+
+    <button id="btnStart" class="start-btn">▶ 10분 수업 시작</button>
+
+    <h2 class="section-title">지난 수업</h2>
+    <div id="history" class="history"><div class="empty">아직 수업 기록이 없어요</div></div>
+  </section>
+
+  <!-- 수업 중 -->
+  <section id="lesson" class="screen lesson" hidden>
+    <header class="top">
+      <div id="lessonTitle" class="title small">수업</div>
+      <div id="timer" class="timer">10:00</div>
+      <button id="btnEnd" class="end-btn">끝내기</button>
+    </header>
+
+    <div class="stage">
+      <button id="orb" class="orb idle" aria-label="대화 버튼">
+        <span class="ring"></span>
+        <span id="orbLabel" class="orb-label">준비 중…</span>
+      </button>
+      <div id="live" class="live" aria-live="polite"></div>
+    </div>
+
+    <section id="log" class="log" aria-label="대화 기록"></section>
+
+    <nav class="controls">
+      <button id="btnSlow">🐢<span>천천히 다시</span></button>
+      <button id="btnKo">🇰🇷<span>한국어로 듣는 중</span></button>
+      <button id="btnPause">⏸<span>일시정지</span></button>
+    </nav>
+  </section>
+
+  <!-- 수업 결과 -->
+  <section id="result" class="screen" hidden>
+    <header class="top"><div class="title">오늘 수업 결과</div></header>
+    <div id="resultBody"></div>
+    <button id="btnHome" class="start-btn">홈으로</button>
+  </section>
+
+  <!-- 설정 (아래에서 올라오는 창, ✕ 로 닫기) -->
+  <div id="sheet" class="sheet" hidden>
+    <div class="sheet-backdrop" data-close></div>
+    <div class="sheet-panel" role="dialog" aria-label="설정">
+      <div class="sheet-head">
+        <div class="title small">설정</div>
+        <button class="icon-btn" data-close aria-label="닫기">✕</button>
+      </div>
+      <div class="sheet-body">
+        <label class="row">말하기 속도
+          <input id="rate" type="range" min="0.6" max="1.1" step="0.05" value="0.85">
+          <output id="rateOut">0.85</output>
+        </label>
+        <label class="row">선생님 모드
+          <select id="model">
+            <option value="sonnet">꼼꼼한 교정 (추천)</option>
+            <option value="haiku">빠른 응답</option>
+          </select>
+        </label>
+        <label class="row">블루투스 대기
+          <input id="btDelay" type="range" min="0" max="2000" step="100" value="800">
+          <output id="btOut">0.8초</output>
+        </label>
+        <label id="aiVoiceRow" class="row" hidden>AI 목소리 <select id="aiVoice"></select></label>
+        <div id="ttsUsage" class="usage"></div>
+        <div id="sysVoices">
+          <label class="row">영어 목소리 <select id="voiceEn"></select></label>
+          <label class="row">한국어 목소리 <select id="voiceKo"></select></label>
+        </div>
+        <button id="btnPreview" class="wide-btn" type="button">▶ 목소리 미리듣기</button>
+        <div id="stats" class="usage"></div>
+      </div>
+    </div>
+  </div>
 
   <script src="/app.js"></script>
 </body>

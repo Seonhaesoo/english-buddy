@@ -21,8 +21,12 @@ const S = {
   wakeLock: null,
   listenLang: 'ko-KR',
   btDelay: Number(localStorage.getItem('btDelay') ?? 800), // 블루투스 깨우는 시간(ms)
-  needWake: false,  // 학생이 말할 언어 (선생님 답의 [[en]]/[[ko]] 로 자동 전환)
+  needWake: false,
+  phase: 'home',         // home | lesson | wrapping | result
+  lessonEndAt: 0,        // 10분 수업이 끝나는 시각
+  timeUp: false,
 };
+const LESSON_MS = 10 * 60 * 1000;
 
 // ------------------------------------------------------------------ UI
 
@@ -38,7 +42,7 @@ const LABELS = {
 function setMode(mode, liveText) {
   S.mode = mode;
   orb.className = 'orb ' + mode;
-  orbLabel.innerHTML = S.started || mode !== 'idle' ? LABELS[mode] : '탭해서<br>시작';
+  orbLabel.innerHTML = LABELS[mode];
   if (liveText !== undefined) live.textContent = liveText;
 }
 
@@ -76,7 +80,7 @@ async function keepAwake() {
   } catch {}
 }
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && S.started) keepAwake();
+  if (document.visibilityState === 'visible' && S.phase === 'lesson') keepAwake();
 });
 
 // ------------------------------------------------------------------ 음성 출력 (TTS)
@@ -219,7 +223,8 @@ function playTTS(h, rateMul) {
     const rate = Math.min(1.4, Math.max(0.6, (S.rate / 0.85) * rateMul));
     const sources = [];
     let nextTime = 0, carry = null, idx = 0, played = false, stopped = false, ended = 0;
-    const finish = (ok) => { if (S.ttsStop === stop) S.ttsStop = null; resolve(ok); };
+    let finished = false;
+    const finish = (ok) => { if (finished) return; finished = true; if (S.ttsStop === stop) S.ttsStop = null; resolve(ok); };
     const stop = () => { stopped = true; sources.forEach((src) => { try { src.stop(); } catch {} }); finish(true); };
     S.ttsStop = stop;
 
@@ -251,11 +256,14 @@ function playTTS(h, rateMul) {
       if (h.done) {
         if (!played) return finish(false); // 하나도 못 받음
         if (ended === sources.length) return finish(true);
+        // 안전장치: 재생 끝 알림이 안 와도 예정 시간이 지나면 다음으로 넘어간다
+        setTimeout(() => !stopped && finish(true), Math.max(0, nextTime - ctx.currentTime) * 1000 + 1500);
         return; // 남은 소리가 끝나면 onended 에서 finish
       }
       h.notify = pump;
     };
     if (!ctx) return finish(false);
+    if (ctx.state !== 'running') ctx.resume().catch(() => {});
     pump();
   });
 }
@@ -302,7 +310,10 @@ function stopSpeech() {
 
 function afterSpeech() {
   setMode('idle', '');
-  if (S.handsFree) setTimeout(() => S.mode === 'idle' && listen(), 250);
+  if (S.phase === 'wrapping') return finishLesson();
+  if (S.phase !== 'lesson') return;
+  if (S.timeUp) return wrapUp();
+  if (S.handsFree) setTimeout(() => S.mode === 'idle' && S.phase === 'lesson' && listen(), 250);
 }
 
 // 선생님 답 끝의 [[en]] / [[ko]] = 학생이 다음에 말할 언어
@@ -357,6 +368,7 @@ function listen(lang = S.listenLang) {
       return;
     }
     if (S.mode !== 'listening') return; // 사용자가 직접 멈춤
+    if (S.timeUp) { setMode('idle', ''); return wrapUp(); } // 시간 끝 + 조용함 → 마무리
     // 아무 말도 없었음 → 몇 번은 조용히 다시 듣고, 너무 오래면 쉬기
     S.silentTries += 1;
     if (S.handsFree && S.silentTries < 6) {
@@ -449,6 +461,7 @@ async function ask(text, { hidden = false } = {}) {
       : '오류: ' + err.message;
     addMsg('sys', msg);
     setMode('error', '');
+    if (S.phase === 'wrapping') finishLesson(); // 마무리 인사가 실패해도 평가는 진행
   }
 }
 
@@ -456,15 +469,7 @@ async function ask(text, { hidden = false } = {}) {
 
 orb.addEventListener('click', () => {
   if (S.serverUp === false) return startServerViaTermux();
-  if (!S.started) {
-    S.started = true;
-    S.handsFree = true;
-    keepAwake();
-    unlockAudio();
-    if (synth) synth.speak(new SpeechSynthesisUtterance('')); // 모바일 TTS 잠금 해제
-    ask('[학생이 방금 앱을 켰어. 전화영어 수업 시작이야. 한국어로 짧게 반갑게 인사하고, 아주 쉬운 영어 질문 하나로 대화를 시작해.]', { hidden: true });
-    return;
-  }
+  if (S.phase !== 'lesson') return;
   switch (S.mode) {
     case 'speaking': stopSpeech(); listen(); break;          // 말 끊고 바로 내 차례
     case 'listening': S.mode = 'idle'; stopListening(); setMode('idle', ''); break;
@@ -504,7 +509,6 @@ $('btnKo').addEventListener('click', () => {
   if (S.mode === 'thinking') return;
   if (S.rec) { S.mode = 'idle'; stopListening(); }
   stopSpeech();
-  S.started = true;
   // 듣기 언어 바꾸기 (한국어 ↔ 영어) 후 바로 듣기
   setListenLang(S.listenLang === 'en-US' ? 'ko-KR' : 'en-US');
   setTimeout(() => listen(), 150);
@@ -523,17 +527,125 @@ $('btnPause').addEventListener('click', () => {
   }
 });
 
-$('btnReset').addEventListener('click', async () => {
-  if (!confirm('새 대화를 시작할까요? 지금 대화 내용은 사라져요.')) return;
+// ------------------------------------------------------------------ 화면 / 수업 흐름
+
+function showScreen(name) {
+  for (const id of ['home', 'lesson', 'result']) $(id).hidden = id !== name;
+  window.scrollTo(0, 0);
+}
+
+const LEVEL_DESC = [
+  '', '영어 인사나 단어 몇 개', '아주 짧은 정해진 문장', '현재형 짧은 문장으로 내 얘기',
+  '과거형도 쓰지만 실수가 많음', '쉬운 질문에 2~3문장으로 대답', '이유를 말하고 시제가 대체로 맞음',
+  '경험과 계획을 말함', '내 의견을 자연스럽게', '긴 대화를 스스로 이어감', '원어민과 자유로운 일상 대화',
+];
+
+function esc(t) { return String(t ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+async function loadHome() {
+  try {
+    const p = await (await fetch('/api/progress')).json();
+    const lv = p.plan.level;
+    $('levelNum').textContent = lv ?? '-';
+    $('levelBar').innerHTML = Array.from({ length: 10 }, (_, i) => `<i class="${lv && i < lv ? 'on' : ''}"></i>`).join('');
+    $('levelDesc').textContent = lv ? LEVEL_DESC[lv] : '첫 수업에서 레벨을 알아봐요';
+    $('nextLabel').textContent = `${p.plan.lessonNo}번째 수업 · 오늘의 주제`;
+    $('nextFocus').textContent = p.plan.focus;
+    $('history').innerHTML = p.lessons.length
+      ? p.lessons.map((l) => `<div class="h-item"><div class="h-top"><span>${esc(l.date)}</span><span class="h-level">레벨 ${l.level}</span></div><div class="h-sum">${esc(l.summary)}</div></div>`).join('')
+      : '<div class="empty">아직 수업 기록이 없어요</div>';
+    S.plan = p.plan;
+  } catch {}
+}
+
+async function startLesson() {
+  if (S.serverUp === false) return startServerViaTermux();
+  unlockAudio();
+  if (synth) synth.speak(new SpeechSynthesisUtterance('')); // 모바일 음성 잠금 해제 (첫 터치 때)
+  keepAwake();
+  const plan = await (await fetch('/api/lesson/start', { method: 'POST' })).json().catch(() => S.plan || {});
+  log.innerHTML = '';
+  S.lastReply = '';
+  S.handsFree = true;
+  S.timeUp = false;
+  S.phase = 'lesson';
+  S.lessonEndAt = Date.now() + LESSON_MS;
+  setListenLang('ko-KR');
+  $('lessonTitle').textContent = `${plan.lessonNo || ''}번째 수업`;
+  showScreen('lesson');
+  tickTimer();
+  ask(`[수업 시작. ${plan.lessonNo}번째 수업이야. 한국어로 짧게 반갑게 인사하고, 지난 수업 기록이 있으면 짧게 복습한 뒤, 오늘의 주제로 아주 쉬운 영어 질문 하나를 해.]`, { hidden: true });
+}
+
+function tickTimer() {
+  if (S.phase !== 'lesson' && S.phase !== 'wrapping') return;
+  const left = Math.max(0, S.lessonEndAt - Date.now());
+  const m = Math.floor(left / 60000), sec = Math.floor((left % 60000) / 1000);
+  $('timer').textContent = `${m}:${String(sec).padStart(2, '0')}`;
+  $('timer').classList.toggle('low', left < 60000);
+  if (!left && !S.timeUp && S.phase === 'lesson') {
+    S.timeUp = true;
+    // 지금 말하거나 생각 중이면 그게 끝난 뒤 마무리, 쉬는 중이면 바로 마무리
+    if (S.mode === 'idle' || S.mode === 'paused' || S.mode === 'error') wrapUp();
+    else if (S.mode === 'listening') addMsg('sys', '⏰ 10분이 됐어요. 이번 대답 뒤에 마무리해요');
+  }
+}
+setInterval(tickTimer, 1000);
+
+// 수업 마무리: 선생님이 오늘 수업을 정리해서 말하게 하고, 다 말하면 평가
+function wrapUp() {
+  if (S.phase !== 'lesson') return;
+  S.phase = 'wrapping';
   if (S.rec) { S.mode = 'idle'; stopListening(); }
   stopSpeech();
-  log.innerHTML = '';
-  statsEl.textContent = '';
-  S.started = false;
-  S.lastReply = '';
-  await fetch('/api/reset', { method: 'POST' }).catch(() => {});
-  setMode('idle', '');
+  ask('[수업 시간 끝. 오늘 잘한 점 하나와 다음에 고칠 점 하나를 한국어로 짧게 말하고, 다음 수업에서 만나자고 마무리 인사해. 질문은 하지 마.]', { hidden: true });
+}
+
+async function finishLesson() {
+  S.phase = 'result';
+  S.handsFree = false;
+  try { S.wakeLock?.release(); } catch {}
+  showScreen('result');
+  $('resultBody').innerHTML = '<div class="loading">선생님이 오늘 수업을 평가하고 있어요…</div>';
+  const prevLevel = S.plan?.level;
+  let data = null;
+  try { data = await (await fetch('/api/lesson/end', { method: 'POST' })).json(); } catch {}
+  const ev = data?.evaluation;
+  if (!ev) {
+    $('resultBody').innerHTML = '<div class="card"><p>대화가 짧아서 이번 수업은 평가하지 않았어요.</p></div>';
+    loadHome();
+    return;
+  }
+  const diff = prevLevel ? ev.level - prevLevel : null;
+  const change = diff == null ? '첫 레벨 측정' : diff > 0 ? `지난번보다 ${diff} 올랐어요 🎉` : diff < 0 ? `지난번보다 ${-diff} 내려갔어요` : '지난번과 같아요';
+  $('resultBody').innerHTML = `
+    <div class="card result-level">
+      <div class="label">오늘 레벨</div>
+      <div class="big">${ev.level} <span class="level-max">/ 10</span></div>
+      <div class="change ${diff > 0 ? 'up' : ''}">${change}</div>
+      <div class="level-desc">${esc(LEVEL_DESC[ev.level])}</div>
+    </div>
+    <div class="card">
+      <div class="r-sec"><div class="label">오늘 한 것</div><p>${esc(ev.summary)}</p></div>
+      <div class="r-sec"><div class="label">👍 잘한 점</div><p>${esc(ev.good)}</p></div>
+      <div class="r-sec"><div class="label">✏️ 고칠 점</div><p>${esc(ev.improve)}</p></div>
+      ${ev.mistakes?.length ? `<div class="r-sec"><div class="label">틀린 문장 → 맞는 문장</div><ul>${ev.mistakes.map((m) => `<li>${esc(m)}</li>`).join('')}</ul></div>` : ''}
+      <div class="r-sec"><div class="label">다음 수업</div><p>${esc(ev.next_focus)}</p></div>
+    </div>`;
+  loadHome();
+}
+
+$('btnStart').addEventListener('click', startLesson);
+$('btnHome').addEventListener('click', () => { S.phase = 'home'; showScreen('home'); loadHome(); });
+$('btnEnd').addEventListener('click', () => {
+  if (S.phase !== 'lesson') return;
+  if (!confirm('수업을 지금 끝낼까요? 선생님이 마무리하고 평가해요.')) return;
+  wrapUp();
 });
+
+// 설정 창: ⚙ 로 열고, ✕ 또는 바깥을 누르면 닫기
+$('btnSettings').addEventListener('click', () => { $('sheet').hidden = false; });
+document.querySelectorAll('[data-close]').forEach((el) => el.addEventListener('click', () => { $('sheet').hidden = true; }));
 
 $('btDelay').value = S.btDelay;
 const showBt = () => ($('btOut').textContent = (S.btDelay / 1000).toFixed(1) + '초');
@@ -567,7 +679,7 @@ async function checkServer() {
   try {
     const r = await fetch('/api/status');
     const s = await r.json();
-    conn.textContent = '서버 연결됨 · ' + (s.model === 'haiku' ? '빠른 응답' : '꼼꼼한 교정');
+    conn.textContent = '● 준비됨 · ' + (s.model === 'haiku' ? '빠른 응답 모드' : '꼼꼼한 교정 모드');
     $('model').value = s.model;
     S.tts = !!s.tts;
     $('aiVoiceRow').hidden = !s.tts;
@@ -581,12 +693,20 @@ async function checkServer() {
       : '';
     conn.className = 'conn ok';
     showStats(s.totals);
-    if (!S.serverUp) { S.serverUp = true; if (S.mode === 'idle' || S.mode === 'paused') setMode(S.mode, ''); }
+    if (!S.serverUp) {
+      S.serverUp = true;
+      if (S.phase === 'lesson' && (S.mode === 'idle' || S.mode === 'paused')) setMode(S.mode, '');
+      $('btnStart').textContent = '▶ 10분 수업 시작';
+      $('btnStart').classList.remove('off');
+      loadHome();
+    }
   } catch {
     conn.textContent = '서버 꺼짐';
     conn.className = 'conn bad';
     S.serverUp = false;
-    if (!S.rec && S.mode !== 'speaking') {
+    $('btnStart').textContent = '서버 켜기 (Termux가 잠깐 열려요)';
+    $('btnStart').classList.add('off');
+    if (S.phase === 'lesson' && !S.rec && S.mode !== 'speaking') {
       orb.className = 'orb paused';
       orbLabel.innerHTML = '탭해서<br>서버 켜기';
       live.textContent = 'Termux가 잠깐 열렸다가 자동으로 돌아와요';
@@ -602,5 +722,6 @@ checkServer();
 setInterval(checkServer, 5000);
 setListenLang('ko-KR');
 setMode('idle', SR ? '' : '이 브라우저는 음성 인식을 지원하지 않아요. 크롬을 써주세요.');
+loadHome();
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});

@@ -38,7 +38,7 @@ function childEnv() {
   }
   return env;
 }
-const LEARNER_FILE = path.join(__dirname, 'learner.md');
+const PROGRESS_FILE = path.join(__dirname, 'progress.json'); // 수업 기록 (레벨, 실수, 다음 주제)
 
 const BASE_PROMPT = `너는 한국인 학생 1명과 "전화영어" 수업을 하는 1:1 영어 과외 선생님이야. 한국어도 원어민처럼 잘해. 음성으로만 대화해.
 학생은 영어 완전 초보야. 운전 중일 수 있어서 화면을 볼 수 없어.
@@ -80,15 +80,55 @@ const BASE_PROMPT = `너는 한국인 학생 1명과 "전화영어" 수업을 �
 듣기 언어 표시 (꼭 지켜):
 - 답의 맨 끝에 학생이 다음에 어떤 언어로 말할지 표시를 하나 붙여.
 - 학생이 영어로 대답하거나 따라 말해야 하면 [[en]], 한국어로 대답하면 되면 [[ko]]
-- 전화영어니까 대부분 [[en]] 이야. 학생이 계속 막히면 그때만 [[ko]].`;
+- 전화영어니까 대부분 [[en]] 이야. 학생이 계속 막히면 그때만 [[ko]].
+
+수업 형식 (한 번에 10분):
+- 시작: 반갑게 인사하고, 지난 수업 기록이 있으면 지난번에 틀린 표현 하나를 다시 말해보게 하며 짧게 복습해.
+- 본론: 오늘의 주제로 일상 대화. 오늘 주제와 관련된 표현을 자연스럽게 여러 번 쓰게 해.
+- 끝: 앱이 수업 종료를 알려주면 마무리해. 그 전에는 먼저 끝내지 마.
+
+학생 레벨 기준 (1~10):
+1 영어 인사나 단어 몇 개만 말함
+2 I'm fine 같은 아주 짧은 정해진 문장만
+3 현재형 짧은 문장으로 자기 얘기를 조금
+4 과거형도 쓰지만 시제·동사 실수가 많음
+5 쉬운 질문에 2~3문장으로 대답
+6 because 등으로 이유를 말하고 시제가 대체로 맞음
+7 경험과 계획을 말할 수 있음
+8 자기 의견을 자연스러운 표현으로 말함
+9 긴 대화를 스스로 이어감
+10 원어민과 일상 대화를 자유롭게 함
+학생 레벨에 맞춰 질문 난이도와 한국어 비중을 조절해. 레벨 1~3은 한국어 설명을 넉넉히, 6 이상은 영어 위주로.`;
+
+const EVAL_PROMPT = `[수업 종료. 이번 응답은 학생에게 들리지 않는 기록용이야.]
+오늘 수업 대화 전체를 보고 학생을 평가해서 아래 JSON 하나만 출력해. 다른 글, 코드블록, [[en]] 표시는 쓰지 마.
+{"level": 1~10 정수, "summary": "오늘 한 대화 한 줄 요약", "good": "잘한 점 한 줄", "improve": "가장 먼저 고칠 점 한 줄", "mistakes": ["학생이 말한 틀린 문장 → 맞는 문장", 최대 5개], "next_focus": "다음 수업에서 연습할 주제와 표현 한 줄"}
+모든 설명은 한국어로. 레벨은 위의 레벨 기준으로, 오늘 실제로 말한 영어만 보고 정해.`;
+
+function loadProgress() {
+  try { return JSON.parse(fs.readFileSync(PROGRESS_FILE, 'utf8')); } catch { return { lessons: [] }; }
+}
+
+function currentPlan() {
+  const lessons = loadProgress().lessons;
+  const last = lessons[lessons.length - 1];
+  return {
+    lessonNo: lessons.length + 1,
+    level: last?.level ?? null,
+    focus: last?.next_focus || '자기소개와 오늘 하루 이야기 (첫 수업이라 레벨 파악)',
+  };
+}
 
 function loadLearnerNotes() {
-  try {
-    const notes = fs.readFileSync(LEARNER_FILE, 'utf8').trim();
-    return notes ? `\n\nNotes about this learner from past lessons:\n${notes}` : '';
-  } catch {
-    return '';
+  const { lessons } = loadProgress();
+  const plan = currentPlan();
+  let t = `\n\n이번 수업: ${plan.lessonNo}번째 수업. 오늘의 주제: ${plan.focus}`;
+  if (!lessons.length) return t + '\n첫 수업이야. 아주 쉬운 질문부터 시작해서 학생 레벨을 파악해.';
+  t += `\n학생의 현재 레벨: ${plan.level} / 10\n지난 수업 기록 (최근 순):`;
+  for (const l of lessons.slice(-3).reverse()) {
+    t += `\n- ${l.date} 레벨 ${l.level}: ${l.summary} / 고칠 점: ${l.improve} / 실수: ${(l.mistakes || []).join(', ')}`;
   }
+  return t;
 }
 
 // ---------------------------------------------------------------- Tutor session
@@ -203,6 +243,7 @@ class Tutor {
     if (this.turn) return Promise.reject(new Error('busy'));
     if (!this.abort) this.start();
     clearTimeout(this.idleTimer);
+    this.lessonTurns = (this.lessonTurns || 0) + 1;
     return new Promise((resolve, reject) => {
       this.turn = { onDelta, resolve, reject, text: '' };
       this.inbox.push({
@@ -215,7 +256,25 @@ class Tutor {
     });
   }
 
+  // 수업 끝: 같은 세션에 평가를 요청 (학생에게는 안 들림) → 기록 저장 → 세션 종료
+  async evaluate() {
+    if (!this.abort || (this.lessonTurns || 0) < 3) return null; // 대화가 거의 없으면 평가 안 함
+    const { text } = await this.say(EVAL_PROMPT, () => {});
+    const m = text.match(/\{[\s\S]*\}/);
+    if (!m) throw new Error('평가 결과를 읽지 못했어요');
+    const ev = JSON.parse(m[0]);
+    ev.level = Math.min(10, Math.max(1, Math.round(Number(ev.level) || 1)));
+    ev.date = new Date().toLocaleDateString('ko-KR', { timeZone: 'Asia/Seoul' });
+    ev.turns = this.lessonTurns;
+    const p = loadProgress();
+    p.lessons.push(ev);
+    fs.writeFileSync(PROGRESS_FILE, JSON.stringify(p, null, 2));
+    this.stop();
+    return ev;
+  }
+
   reset() {
+    this.lessonTurns = 0;
     this.stop();
     this.totals = { turns: 0, inputTokens: 0, outputTokens: 0, costUsd: 0 };
   }
@@ -442,6 +501,23 @@ const server = http.createServer(async (req, res) => {
       if (!TTS_VOICES.includes(voice)) return json(res, 400, { error: 'unknown voice' });
       fs.writeFileSync(SETTINGS_FILE, JSON.stringify({ ...loadSettings(), voice }));
       return json(res, 200, { ok: true, voice });
+    }
+    if (req.method === 'POST' && req.url === '/api/lesson/start') {
+      tutor.reset();
+      return json(res, 200, currentPlan());
+    }
+    if (req.method === 'POST' && req.url === '/api/lesson/end') {
+      try {
+        const ev = await tutor.evaluate();
+        return json(res, 200, { ok: true, evaluation: ev, next: currentPlan() });
+      } catch (err) {
+        console.error('[lesson]', err.message);
+        tutor.stop();
+        return json(res, 500, { error: err.message });
+      }
+    }
+    if (req.method === 'GET' && req.url === '/api/progress') {
+      return json(res, 200, { plan: currentPlan(), lessons: loadProgress().lessons.slice(-20).reverse() });
     }
     if (req.method === 'GET' && req.url === '/api/status') {
       return json(res, 200, { ok: true, model: MODEL, busy: !!tutor.turn, active: !!tutor.abort, totals: tutor.totals,
