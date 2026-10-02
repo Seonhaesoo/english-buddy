@@ -91,3 +91,4 @@ footer { padding: 4px 0 12px; font-size: 12px; color: var(--muted); display: fle
   padding: 8px; font-size: 13px; cursor: pointer;
 }
 [hidden] { display: none !important; }
+.usage { font-size: 12px; color: var(--muted); margin-top: 4px; }

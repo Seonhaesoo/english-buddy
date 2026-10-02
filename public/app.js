@@ -190,12 +190,15 @@ const TTS_RATE = 24000;
 // 음성 받기 시작 (재생 순서가 오기 전에 미리 받아두기 위해 바로 시작)
 function startTTS(text) {
   if (!S.tts) return null;
-  const h = { chunks: [], done: false, failed: false, notify: null };
+  const h = { chunks: [], done: false, failed: false, error: '', notify: null };
   const wake = () => { const f = h.notify; h.notify = null; f && f(); };
   fetch('/api/tts', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }),
   }).then(async (r) => {
-    if (!r.ok || !r.body) throw new Error('tts ' + r.status);
+    if (!r.ok || !r.body) {
+      const j = await r.json().catch(() => ({}));
+      throw new Error(r.status === 429 ? j.error : 'AI 음성 오류라 기본 음성으로 읽어요');
+    }
     const reader = r.body.getReader();
     while (true) {
       const { value, done } = await reader.read();
@@ -203,7 +206,7 @@ function startTTS(text) {
       h.chunks.push(value);
       wake();
     }
-  }).catch(() => { if (!h.chunks.length) h.failed = true; })
+  }).catch((err) => { if (!h.chunks.length) { h.failed = true; h.error = err.message; } })
     .finally(() => { h.done = true; wake(); });
   return h;
 }
@@ -260,6 +263,11 @@ function playTTS(h, rateMul) {
 async function speakText(text, rateMul = 1, handle) {
   const h = handle || startTTS(text);
   if (h && (await playTTS(h, rateMul))) return;
+  // AI 음성을 못 쓰면 이유를 한 번 알려주고 폰 기본 음성으로 읽기
+  if (h?.error && S.ttsNotice !== h.error) {
+    S.ttsNotice = h.error;
+    addMsg('sys', '🔈 ' + h.error);
+  }
   return speakChunk(text, rateMul);
 }
 
@@ -568,6 +576,9 @@ async function checkServer() {
     }
     if (s.tts && document.activeElement !== $('aiVoice')) $('aiVoice').value = s.tts.voice;
     $('sysVoices').hidden = !!s.tts;
+    $('ttsUsage').textContent = s.tts?.used != null
+      ? `AI 음성 이번 달 ${s.tts.used.toLocaleString()} / ${s.tts.limit.toLocaleString()}자 (넘으면 자동으로 기본 음성)`
+      : '';
     conn.className = 'conn ok';
     showStats(s.totals);
     if (!S.serverUp) { S.serverUp = true; if (S.mode === 'idle' || S.mode === 'paused') setMode(S.mode, ''); }

@@ -223,8 +223,43 @@ class Tutor {
 
 const tutor = new Tutor();
 
-// ---------------------------------------------------------------- Gemini 음성 (TTS)
-// GEMINI_API_KEY 가 있으면 사람 같은 AI 음성으로 읽어준다. 없으면 폰 기본 음성 사용.
+// ---------------------------------------------------------------- AI 음성 (TTS)
+// GOOGLE_TTS_API_KEY 가 있으면 Google Cloud 음성(빠름), 없고 GEMINI_API_KEY 가 있으면 Gemini 음성.
+// 둘 다 없으면 앱이 폰 기본 음성을 쓴다.
+const TTS_PROVIDER = process.env.GOOGLE_TTS_API_KEY ? 'google' : process.env.GEMINI_API_KEY ? 'gemini' : null;
+// Google Cloud Chirp 3 HD 무료: 매달 100만 자. 넘으면 유료라 90만 자에서 멈추고 폰 기본 음성으로.
+const TTS_MONTHLY_LIMIT = Number(process.env.TTS_MONTHLY_LIMIT || 900000);
+
+function monthKey() { return new Date().toISOString().slice(0, 7); }
+function ttsUsage() {
+  const u = loadSettings().ttsUsage;
+  return u && u.month === monthKey() ? u.chars : 0;
+}
+function addTtsUsage(n) {
+  const st = loadSettings();
+  fs.writeFileSync(SETTINGS_FILE, JSON.stringify({ ...st, ttsUsage: { month: monthKey(), chars: ttsUsage() + n } }));
+}
+
+class TtsLimitError extends Error {}
+
+// Google Cloud: 문장 전체를 한 번에 받는다(보통 1초 이내). LINEAR16 = WAV 헤더 + 24kHz PCM
+async function synthesizeGoogle(text, voice) {
+  const r = await fetch('https://texttospeech.googleapis.com/v1/text:synthesize', {
+    method: 'POST',
+    headers: { 'x-goog-api-key': process.env.GOOGLE_TTS_API_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      input: { text },
+      voice: { languageCode: 'ko-KR', name: 'ko-KR-Chirp3-HD-' + voice },
+      audioConfig: { audioEncoding: 'LINEAR16', sampleRateHertz: 24000 },
+    }),
+  });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(`Google TTS ${r.status}: ${body.error?.message || ''}`.slice(0, 300));
+  let pcm = Buffer.from(body.audioContent || '', 'base64');
+  if (pcm.subarray(0, 4).toString() === 'RIFF') pcm = pcm.subarray(44); // WAV 헤더 제거
+  if (!pcm.length) throw new Error('Google TTS: 오디오 없음');
+  return pcm;
+}
 const TTS_MODEL = 'gemini-3.8-flash-tts';
 const TTS_VOICES = ['Kore', 'Leda', 'Aoede', 'Callirrhoe', 'Despina', 'Puck', 'Charon', 'Fenrir', 'Orus', 'Achird'];
 const TTS_STYLE = 'a warm, patient, friendly English tutor talking to a Korean beginner; clear and calm; natural Korean, and clear standard American English for English words';
@@ -240,6 +275,15 @@ async function synthesizeStream(text, onChunk) {
   const voice = ttsVoice();
   const key = voice + '|' + text;
   if (ttsCache.has(key)) { onChunk(ttsCache.get(key)); return; }
+  if (TTS_PROVIDER === 'google') {
+    if (ttsUsage() + text.length > TTS_MONTHLY_LIMIT) throw new TtsLimitError('이번 달 무료 사용량을 거의 다 써서 기본 음성으로 바꿨어요');
+    const pcm = await synthesizeGoogle(text, voice);
+    addTtsUsage(text.length);
+    ttsCache.set(key, pcm);
+    if (ttsCache.size > 200) ttsCache.delete(ttsCache.keys().next().value);
+    onChunk(pcm);
+    return;
+  }
   const r = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
     method: 'POST',
     headers: { 'x-goog-api-key': process.env.GEMINI_API_KEY, 'Content-Type': 'application/json' },
@@ -254,6 +298,7 @@ async function synthesizeStream(text, onChunk) {
       stream: true,
     }),
   });
+  if (r.status === 429) throw new TtsLimitError('Gemini 무료 음성 하루 한도를 다 써서 기본 음성으로 바꿨어요');
   if (!r.ok) throw new Error(`Gemini TTS ${r.status}: ${(await r.text()).slice(0, 200)}`);
   const reader = r.body.getReader();
   const dec = new TextDecoder();
@@ -373,7 +418,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, model });
     }
     if (req.method === 'POST' && req.url === '/api/tts') {
-      if (!process.env.GEMINI_API_KEY) return json(res, 404, { error: 'no tts key' });
+      if (!TTS_PROVIDER) return json(res, 404, { error: 'no tts key' });
       const { text } = JSON.parse((await readBody(req)) || '{}');
       if (!text?.trim()) return json(res, 400, { error: 'empty' });
       let started = false;
@@ -389,7 +434,7 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         console.error('[tts]', err.message);
         if (started) return res.end();
-        return json(res, 502, { error: err.message });
+        return json(res, err instanceof TtsLimitError ? 429 : 502, { error: err.message });
       }
     }
     if (req.method === 'POST' && req.url === '/api/voice') {
@@ -400,7 +445,10 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'GET' && req.url === '/api/status') {
       return json(res, 200, { ok: true, model: MODEL, busy: !!tutor.turn, active: !!tutor.abort, totals: tutor.totals,
-        tts: process.env.GEMINI_API_KEY ? { voice: ttsVoice(), voices: TTS_VOICES } : null });
+        tts: TTS_PROVIDER ? {
+          provider: TTS_PROVIDER, voice: ttsVoice(), voices: TTS_VOICES,
+          used: TTS_PROVIDER === 'google' ? ttsUsage() : null, limit: TTS_MONTHLY_LIMIT,
+        } : null });
     }
     if (req.method === 'GET') return serveStatic(req, res);
     json(res, 405, { error: 'method not allowed' });
