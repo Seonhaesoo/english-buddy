@@ -3,6 +3,7 @@
 URL=http://localhost:8787
 if ! curl -s -m 2 $URL/api/status >/dev/null; then
   termux-toast "English Buddy 켜는 중…" 2>/dev/null
+  proot-distro login debian -- git -C /root/english-tutor pull -q >/dev/null 2>&1  # 최신 버전 자동 반영
   termux-wake-lock
   nohup bash -c 'proot-distro login debian -- bash -c "cd ~/english-tutor && node server.js"; termux-wake-unlock' > ~/tutor.log 2>&1 &
   for i in $(seq 1 40); do curl -s -m 1 $URL/api/status >/dev/null && break; sleep 1; done
