@@ -1,3 +1,4 @@
 node_modules/
 .env
 learner.md
+.claude/settings.local.json
