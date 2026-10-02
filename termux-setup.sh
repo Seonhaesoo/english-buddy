@@ -6,8 +6,10 @@ REPO="$1"
 if [ -z "$REPO" ]; then echo "사용법: bash termux-setup.sh <git 저장소 주소>"; exit 1; fi
 
 echo "== 1/4 Termux 패키지 설치 =="
-pkg update -y
-pkg install -y proot-distro
+export DEBIAN_FRONTEND=noninteractive
+OPTS="-o Dpkg::Options::=--force-confnew -o Dpkg::Options::=--force-confdef"
+pkg update -y $OPTS && pkg upgrade -y $OPTS
+pkg install -y $OPTS proot-distro
 
 echo "== 2/4 Debian 설치 (몇 분 걸려요) =="
 proot-distro install debian 2>/dev/null || echo "(Debian 이미 설치됨)"
@@ -15,7 +17,7 @@ proot-distro install debian 2>/dev/null || echo "(Debian 이미 설치됨)"
 echo "== 3/4 Debian 안에 Node.js, git, 앱 설치 =="
 proot-distro login debian -- bash -c "
   set -e
-  apt update && apt install -y nodejs npm git nano ca-certificates
+  export DEBIAN_FRONTEND=noninteractive; apt update && apt install -y nodejs npm git nano ca-certificates
   cd ~
   if [ -d english-tutor ]; then cd english-tutor && git pull; else git clone '$REPO' english-tutor && cd english-tutor; fi
   npm install --omit=dev
