@@ -38,7 +38,12 @@
       <output id="rateOut">0.85</output>
     </label>
     <details class="voices">
-      <summary>목소리 설정</summary>
+      <summary>설정</summary>
+      <label>선생님 모드 <select id="model">
+        <option value="sonnet">꼼꼼한 교정 (추천)</option>
+        <option value="haiku">빠른 응답</option>
+      </select></label>
+      <label>블루투스 대기 <input id="btDelay" type="range" min="0" max="2000" step="100" value="800"><output id="btOut">0.8초</output></label>
       <label>영어 목소리 <select id="voiceEn"></select></label>
       <label>한국어 목소리 <select id="voiceKo"></select></label>
       <button id="btnPreview" type="button">▶ 미리듣기</button>

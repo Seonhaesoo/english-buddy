@@ -19,7 +19,9 @@ const S = {
   speakQueue: [],
   streamDone: true,
   wakeLock: null,
-  listenLang: 'ko-KR',  // 학생이 말할 언어 (선생님 답의 [[en]]/[[ko]] 로 자동 전환)
+  listenLang: 'ko-KR',
+  btDelay: Number(localStorage.getItem('btDelay') ?? 800), // 블루투스 깨우는 시간(ms)
+  needWake: false,  // 학생이 말할 언어 (선생님 답의 [[en]]/[[ko]] 로 자동 전환)
 };
 
 // ------------------------------------------------------------------ UI
@@ -156,12 +158,38 @@ function speakOne(text, lang, rateMul) {
   });
 }
 
+// 차량 블루투스는 소리가 시작될 때 연결/볼륨을 서서히 올린다 → 첫마디가 작게 들림.
+// 말하기 직전에 거의 안 들리는 소리를 잠깐 틀어서 블루투스를 먼저 깨운다.
+let audioCtx = null;
+function unlockAudio() {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+  } catch {}
+}
+function wakeAudio() {
+  const ms = S.btDelay;
+  if (!ms || !audioCtx) return Promise.resolve();
+  return new Promise((resolve) => {
+    try {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      gain.gain.value = 0.002; // 사실상 안 들리는 크기 (완전 무음이면 블루투스가 안 깨어남)
+      osc.frequency.value = 220;
+      osc.connect(gain).connect(audioCtx.destination);
+      osc.start();
+      setTimeout(() => { osc.stop(); resolve(); }, ms);
+    } catch { resolve(); }
+  });
+}
+
 let speaking = false;
 async function pumpSpeech() {
   if (speaking) return;
   speaking = true;
   while (S.speakQueue.length) {
     if (S.mode !== 'speaking') setMode('speaking');
+    if (S.needWake) { S.needWake = false; await wakeAudio(); }
     await speakChunk(S.speakQueue.shift());
     if (S.mode !== 'speaking') { speaking = false; return; } // 사용자가 끊음
   }
@@ -263,6 +291,7 @@ async function ask(text, { hidden = false } = {}) {
   setMode('thinking', '');
   stopSpeech();
   S.streamDone = false;
+  S.needWake = true;
 
   const bubble = addMsg('tutor', '');
   let full = '';
@@ -334,8 +363,9 @@ orb.addEventListener('click', () => {
     S.started = true;
     S.handsFree = true;
     keepAwake();
+    unlockAudio();
     if (synth) synth.speak(new SpeechSynthesisUtterance('')); // 모바일 TTS 잠금 해제
-    ask('[학생이 방금 앱을 켰어. 한국어로 반갑게 인사하고, 오늘 배울 아주 쉬운 영어 인사 한 문장을 알려준 뒤 따라 해보게 해.]', { hidden: true });
+    ask('[학생이 방금 앱을 켰어. 전화영어 수업 시작이야. 한국어로 짧게 반갑게 인사하고, 아주 쉬운 영어 질문 하나로 대화를 시작해.]', { hidden: true });
     return;
   }
   switch (S.mode) {
@@ -351,6 +381,7 @@ $('btnSlow').addEventListener('click', async () => {
   if (S.rec) { S.mode = 'idle'; stopListening(); }
   stopSpeech();
   setMode('speaking', '천천히 다시…');
+  await wakeAudio();
   const parts = S.lastReply.match(/[^.!?]+[.!?]*/g) || [S.lastReply];
   for (const p of parts) {
     await speakChunk(p.trim(), 0.75);
@@ -362,6 +393,8 @@ $('btnSlow').addEventListener('click', async () => {
 $('btnPreview').addEventListener('click', async () => {
   if (S.mode === 'thinking' || S.mode === 'speaking' || S.mode === 'listening') return;
   stopSpeech();
+  unlockAudio();
+  await wakeAudio();
   await speakChunk("Hi! Nice to meet you. How was your day?");
   await speakChunk('안녕하세요! 천천히 같이 연습해요.');
 });
@@ -410,13 +443,32 @@ $('btnOff').addEventListener('click', async () => {
   checkServer();
 });
 
+$('btDelay').value = S.btDelay;
+const showBt = () => ($('btOut').textContent = (S.btDelay / 1000).toFixed(1) + '초');
+showBt();
+$('btDelay').addEventListener('input', (e) => {
+  S.btDelay = Number(e.target.value);
+  showBt();
+  try { localStorage.setItem('btDelay', S.btDelay); } catch {}
+});
+
+$('model').addEventListener('change', async (e) => {
+  const r = await fetch('/api/model', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: e.target.value }),
+  }).catch(() => null);
+  if (!r || !r.ok) addMsg('sys', '모드 변경 실패');
+  checkServer();
+});
+
 // ------------------------------------------------------------------ 시작
 
 async function checkServer() {
   try {
     const r = await fetch('/api/status');
     const s = await r.json();
-    conn.textContent = '서버 연결됨 · ' + s.model;
+    conn.textContent = '서버 연결됨 · ' + (s.model === 'haiku' ? '빠른 응답' : '꼼꼼한 교정');
+    $('model').value = s.model;
     conn.className = 'conn ok';
     showStats(s.totals);
   } catch {

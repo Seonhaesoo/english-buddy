@@ -83,6 +83,8 @@ footer { padding: 4px 0 12px; font-size: 12px; color: var(--muted); display: fle
   flex: 1; max-width: 70%; background: var(--panel); color: var(--text);
   border: 1px solid #ffffff22; border-radius: 8px; padding: 6px; font-size: 13px;
 }
+.voices input[type=range] { flex: 1; }
+.voices output { min-width: 3em; text-align: right; }
 .voices button { margin-top: 6px; max-width: none; width: 100%; cursor: pointer; }
 .off {
   background: none; color: var(--muted); border: 1px solid #ffffff22; border-radius: 8px;
