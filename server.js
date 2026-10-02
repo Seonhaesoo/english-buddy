@@ -235,10 +235,11 @@ function ttsVoice() {
   return TTS_VOICES.includes(v) ? v : 'Kore';
 }
 
-async function synthesize(text) {
+// Gemini 스트리밍: 24kHz/16bit/mono little-endian PCM 조각을 받는 대로 onChunk 로 넘긴다
+async function synthesizeStream(text, onChunk) {
   const voice = ttsVoice();
   const key = voice + '|' + text;
-  if (ttsCache.has(key)) return ttsCache.get(key);
+  if (ttsCache.has(key)) { onChunk(ttsCache.get(key)); return; }
   const r = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
     method: 'POST',
     headers: { 'x-goog-api-key': process.env.GEMINI_API_KEY, 'Content-Type': 'application/json' },
@@ -250,20 +251,36 @@ async function synthesize(text) {
       }],
       response_format: { type: 'audio' },
       generation_config: { speech_config: [{ voice }] },
+      stream: true,
     }),
   });
-  const body = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(`Gemini TTS ${r.status}: ${body.error?.message || JSON.stringify(body).slice(0, 200)}`);
-  const audio = (body.steps || [])
-    .filter((st) => st.type === 'model_output')
-    .flatMap((st) => st.content || [])
-    .filter((c) => c.type === 'audio')
-    .pop();
-  if (!audio?.data) throw new Error('Gemini TTS: 오디오 없음');
-  const wav = Buffer.from(audio.data, 'base64');
-  ttsCache.set(key, wav);
+  if (!r.ok) throw new Error(`Gemini TTS ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  const reader = r.body.getReader();
+  const dec = new TextDecoder();
+  const parts = [];
+  let buf = '';
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf('\n\n')) >= 0) {
+      const block = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      const data = /^data: (\{.*)$/m.exec(block)?.[1];
+      if (!data) continue;
+      const ev = JSON.parse(data);
+      if (ev.error) throw new Error('Gemini TTS: ' + (ev.error.message || JSON.stringify(ev.error)));
+      if (ev.delta?.type === 'audio' && ev.delta.data) {
+        const pcm = Buffer.from(ev.delta.data, 'base64');
+        parts.push(pcm);
+        onChunk(pcm);
+      }
+    }
+  }
+  if (!parts.length) throw new Error('Gemini TTS: 오디오 없음');
+  ttsCache.set(key, Buffer.concat(parts));
   if (ttsCache.size > 200) ttsCache.delete(ttsCache.keys().next().value);
-  return wav;
 }
 
 // ---------------------------------------------------------------- HTTP
@@ -359,12 +376,19 @@ const server = http.createServer(async (req, res) => {
       if (!process.env.GEMINI_API_KEY) return json(res, 404, { error: 'no tts key' });
       const { text } = JSON.parse((await readBody(req)) || '{}');
       if (!text?.trim()) return json(res, 400, { error: 'empty' });
+      let started = false;
       try {
-        const wav = await synthesize(text.trim());
-        res.writeHead(200, { 'Content-Type': 'audio/wav', 'Content-Length': wav.length });
-        return res.end(wav);
+        await synthesizeStream(text.trim(), (pcm) => {
+          if (!started) {
+            started = true;
+            res.writeHead(200, { 'Content-Type': 'audio/pcm', 'X-Sample-Rate': '24000', 'Cache-Control': 'no-cache' });
+          }
+          res.write(pcm);
+        });
+        return res.end();
       } catch (err) {
         console.error('[tts]', err.message);
+        if (started) return res.end();
         return json(res, 502, { error: err.message });
       }
     }

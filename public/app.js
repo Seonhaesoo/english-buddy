@@ -183,31 +183,83 @@ function wakeAudio() {
   });
 }
 
-// ---- Gemini AI 음성: 서버(/api/tts)에서 wav 를 받아 재생. 실패하면 폰 기본 음성으로.
-function fetchTTS(text) {
-  if (!S.tts) return Promise.resolve(null);
-  return fetch('/api/tts', {
+// ---- Gemini AI 음성: 서버(/api/tts)가 PCM 을 흘려주면 받는 대로 바로 재생.
+// 실패하면 폰 기본 음성으로 읽는다.
+const TTS_RATE = 24000;
+
+// 음성 받기 시작 (재생 순서가 오기 전에 미리 받아두기 위해 바로 시작)
+function startTTS(text) {
+  if (!S.tts) return null;
+  const h = { chunks: [], done: false, failed: false, notify: null };
+  const wake = () => { const f = h.notify; h.notify = null; f && f(); };
+  fetch('/api/tts', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }),
-  }).then((r) => (r.ok ? r.blob() : null)).catch(() => null);
+  }).then(async (r) => {
+    if (!r.ok || !r.body) throw new Error('tts ' + r.status);
+    const reader = r.body.getReader();
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      h.chunks.push(value);
+      wake();
+    }
+  }).catch(() => { if (!h.chunks.length) h.failed = true; })
+    .finally(() => { h.done = true; wake(); });
+  return h;
 }
 
-function playBlob(blob, rateMul) {
+// 받은 PCM 조각들을 끊김 없이 이어서 재생. 반환값 false = 음성을 못 받음(폰 음성으로 대체)
+function playTTS(h, rateMul) {
+  unlockAudio();
   return new Promise((resolve) => {
-    const url = URL.createObjectURL(blob);
-    const a = new Audio(url);
-    // 속도 슬라이더 0.85 = AI 음성의 원래 속도
-    a.playbackRate = Math.min(1.5, Math.max(0.5, (S.rate / 0.85) * rateMul));
-    const done = () => { URL.revokeObjectURL(url); if (S.audioEl === a) { S.audioEl = null; S.audioDone = null; } resolve(); };
-    S.audioEl = a;
-    S.audioDone = done;
-    a.onended = a.onerror = done;
-    a.play().catch(done);
+    const ctx = audioCtx;
+    const rate = Math.min(1.4, Math.max(0.6, (S.rate / 0.85) * rateMul));
+    const sources = [];
+    let nextTime = 0, carry = null, idx = 0, played = false, stopped = false, ended = 0;
+    const finish = (ok) => { if (S.ttsStop === stop) S.ttsStop = null; resolve(ok); };
+    const stop = () => { stopped = true; sources.forEach((src) => { try { src.stop(); } catch {} }); finish(true); };
+    S.ttsStop = stop;
+
+    const schedule = (bytes) => {
+      if (carry) { const m = new Uint8Array(carry.length + bytes.length); m.set(carry); m.set(bytes, carry.length); bytes = m; carry = null; }
+      if (bytes.length % 2) { carry = bytes.slice(-1); bytes = bytes.slice(0, -1); }
+      const n = bytes.length / 2;
+      if (!n) return;
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.length);
+      const audio = ctx.createBuffer(1, n, TTS_RATE);
+      const ch = audio.getChannelData(0);
+      for (let i = 0; i < n; i++) ch[i] = view.getInt16(i * 2, true) / 32768;
+      const src = ctx.createBufferSource();
+      src.buffer = audio;
+      src.playbackRate.value = rate;
+      src.connect(ctx.destination);
+      // 처음엔 0.25초 여유를 두고 시작 → 네트워크가 조금 늦어도 끊기지 않게
+      if (!played) { nextTime = ctx.currentTime + 0.25; played = true; }
+      if (nextTime < ctx.currentTime) nextTime = ctx.currentTime + 0.05;
+      src.start(nextTime);
+      nextTime += audio.duration / rate;
+      sources.push(src);
+      src.onended = () => { ended++; if (h.done && ended === sources.length && idx >= h.chunks.length && !stopped) finish(true); };
+    };
+
+    const pump = () => {
+      if (stopped) return;
+      while (idx < h.chunks.length) schedule(h.chunks[idx++]);
+      if (h.done) {
+        if (!played) return finish(false); // 하나도 못 받음
+        if (ended === sources.length) return finish(true);
+        return; // 남은 소리가 끝나면 onended 에서 finish
+      }
+      h.notify = pump;
+    };
+    if (!ctx) return finish(false);
+    pump();
   });
 }
 
-async function speakText(text, rateMul = 1, audioPromise) {
-  const blob = await (audioPromise || fetchTTS(text));
-  if (blob) return playBlob(blob, rateMul);
+async function speakText(text, rateMul = 1, handle) {
+  const h = handle || startTTS(text);
+  if (h && (await playTTS(h, rateMul))) return;
   return speakChunk(text, rateMul);
 }
 
@@ -230,14 +282,14 @@ function enqueueSpeech(text) {
   text = text.trim();
   if (!text) return;
   // AI 음성이면 재생 순서가 오기 전에 미리 받아둔다
-  S.speakQueue.push({ text, audio: S.tts ? fetchTTS(text) : null });
+  S.speakQueue.push({ text, audio: startTTS(text) });
   pumpSpeech();
 }
 
 function stopSpeech() {
   S.speakQueue = [];
   synth && synth.cancel();
-  if (S.audioEl) { S.audioEl.pause(); S.audioDone?.(); }
+  S.ttsStop?.();
 }
 
 function afterSpeech() {
