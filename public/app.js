@@ -19,6 +19,7 @@ const S = {
   speakQueue: [],
   streamDone: true,
   wakeLock: null,
+  listenLang: 'ko-KR',  // 학생이 말할 언어 (선생님 답의 [[en]]/[[ko]] 로 자동 전환)
 };
 
 // ------------------------------------------------------------------ UI
@@ -120,9 +121,31 @@ function pickVoice(lang) {
 const HANGUL = /[ㄱ-힝]/;
 const keep = []; // 일부 크롬에서 utterance가 GC되면 onend가 안 불리는 문제 방지
 
-function speakChunk(text, rateMul = 1) {
+// 한 문장 안의 한국어/영어 부분을 나눈다 → 각각 맞는 목소리로 읽기
+// 예: "오늘 날씨 좋다는 영어로 It's a nice day 라고 해요." → [ko, en, ko]
+function splitByLang(text) {
+  const parts = [];
+  let cur = null;
+  for (const ch of text) {
+    const kind = HANGUL.test(ch) ? 'ko' : /[A-Za-z]/.test(ch) ? 'en' : null;
+    if (kind && (!cur || cur.kind !== kind)) {
+      cur = { kind, text: '' };
+      parts.push(cur);
+    }
+    if (cur) cur.text += ch;
+    else parts.push((cur = { kind: 'ko', text: ch }));
+  }
+  return parts.map((p) => ({ ...p, text: p.text.trim() })).filter((p) => /[A-Za-z0-9ㄱ-힝]/.test(p.text));
+}
+
+async function speakChunk(text, rateMul = 1) {
+  for (const part of splitByLang(text)) {
+    await speakOne(part.text, part.kind === 'ko' ? 'ko-KR' : 'en-US', rateMul);
+  }
+}
+
+function speakOne(text, lang, rateMul) {
   return new Promise((resolve) => {
-    const lang = HANGUL.test(text) ? 'ko-KR' : 'en-US';
     const u = new SpeechSynthesisUtterance(text);
     u.lang = lang;
     u.voice = pickVoice(lang);
@@ -163,9 +186,20 @@ function afterSpeech() {
   if (S.handsFree) setTimeout(() => S.mode === 'idle' && listen(), 250);
 }
 
+// 선생님 답 끝의 [[en]] / [[ko]] = 학생이 다음에 말할 언어
+const LANG_TAG = /\[\[(en|ko)\]\]/g;
+const stripTags = (t) => t.replace(LANG_TAG, '').replace(/\[\[?[a-z]{0,2}\]?$/, '');
+
+function setListenLang(lang) {
+  S.listenLang = lang;
+  const b = $('btnKo');
+  b.firstChild.textContent = lang === 'en-US' ? '🇺🇸' : '🇰🇷';
+  b.querySelector('span').textContent = lang === 'en-US' ? '영어로 듣는 중' : '한국어로 듣는 중';
+}
+
 // ------------------------------------------------------------------ 음성 인식 (STT)
 
-function listen(lang = 'en-US') {
+function listen(lang = S.listenLang) {
   if (!SR) {
     setMode('error', '이 브라우저는 음성 인식을 지원하지 않아요. 안드로이드 크롬을 써주세요.');
     return;
@@ -214,7 +248,7 @@ function listen(lang = 'en-US') {
     }
   };
 
-  setMode('listening', lang === 'ko-KR' ? '한국어로 말해보세요…' : 'Speak English…');
+  setMode('listening', lang === 'ko-KR' ? '듣는 중 (한국어)…' : '영어로 말해보세요…');
   try { rec.start(); } catch { /* 이미 시작됨 */ }
 }
 
@@ -258,12 +292,12 @@ async function ask(text, { hidden = false } = {}) {
         if (ev === 'delta') {
           full += data;
           pending += data;
-          bubble.textContent = full;
+          bubble.textContent = stripTags(full);
           log.scrollTop = log.scrollHeight;
           // 문장이 끝날 때마다 바로 읽기 시작 → 답이 다 오기 전에 말하기 시작
           let m;
           while ((m = /^([\s\S]*?[.!?])\s+/.exec(pending))) {
-            enqueueSpeech(m[1]);
+            enqueueSpeech(stripTags(m[1]));
             pending = pending.slice(m[0].length);
           }
         } else if (ev === 'done') {
@@ -273,7 +307,11 @@ async function ask(text, { hidden = false } = {}) {
         }
       }
     }
-    enqueueSpeech(pending);
+    const tags = [...full.matchAll(LANG_TAG)];
+    setListenLang(tags.length && tags[tags.length - 1][1] === 'en' ? 'en-US' : 'ko-KR');
+    enqueueSpeech(stripTags(pending));
+    full = stripTags(full);
+    bubble.textContent = full;
     S.lastReply = full.trim();
     S.streamDone = true;
     if (!full.trim()) afterSpeech();
@@ -297,7 +335,7 @@ orb.addEventListener('click', () => {
     S.handsFree = true;
     keepAwake();
     if (synth) synth.speak(new SpeechSynthesisUtterance('')); // 모바일 TTS 잠금 해제
-    ask('[The learner just opened the app. Greet them in English very simply and ask one easy question.]', { hidden: true });
+    ask('[학생이 방금 앱을 켰어. 한국어로 반갑게 인사하고, 오늘 배울 아주 쉬운 영어 인사 한 문장을 알려준 뒤 따라 해보게 해.]', { hidden: true });
     return;
   }
   switch (S.mode) {
@@ -333,7 +371,9 @@ $('btnKo').addEventListener('click', () => {
   if (S.rec) { S.mode = 'idle'; stopListening(); }
   stopSpeech();
   S.started = true;
-  setTimeout(() => listen('ko-KR'), 150);
+  // 듣기 언어 바꾸기 (한국어 ↔ 영어) 후 바로 듣기
+  setListenLang(S.listenLang === 'en-US' ? 'ko-KR' : 'en-US');
+  setTimeout(() => listen(), 150);
 });
 
 $('btnPause').addEventListener('click', () => {
@@ -386,6 +426,7 @@ async function checkServer() {
 }
 checkServer();
 setInterval(checkServer, 15000);
+setListenLang('ko-KR');
 setMode('idle', SR ? '' : '이 브라우저는 음성 인식을 지원하지 않아요. 크롬을 써주세요.');
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
