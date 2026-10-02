@@ -250,6 +250,12 @@ const server = http.createServer(async (req, res) => {
       tutor.reset();
       return json(res, 200, { ok: true });
     }
+    if (req.method === 'POST' && req.url === '/api/shutdown') {
+      json(res, 200, { ok: true });
+      console.log('[tutor] shutdown requested');
+      setTimeout(() => process.exit(0), 300);
+      return;
+    }
     if (req.method === 'GET' && req.url === '/api/status') {
       return json(res, 200, { ok: true, model: MODEL, busy: !!tutor.turn, totals: tutor.totals });
     }

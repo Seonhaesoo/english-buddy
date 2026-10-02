@@ -27,10 +27,18 @@ claude setup-token
    `CLAUDE_CODE_OAUTH_TOKEN=` 뒤에 토큰 붙여넣기 → `Ctrl+O` 엔터 → `Ctrl+X`
 4. 안드로이드 설정 → 앱 → Termux → 배터리 → **제한 없음** (안 하면 서버가 꺼져요)
 
-## 3. 매일 쓰기
-1. Termux 열고 `~/tutor.sh` → "English tutor ready" 뜨면 OK
-2. 크롬에서 `http://localhost:8787` (처음 한 번: 메뉴 → **홈 화면에 추가**)
-3. 큰 동그라미 탭 → 선생님이 먼저 말을 걸어요
+## 3. 홈 화면 아이콘 (한 번)
+1. **Termux:Widget** 설치 (F-Droid: https://f-droid.org/packages/com.termux.widget/)
+2. Termux에서 아래 명령:
+   ```bash
+   proot-distro login debian -- bash -c "cd ~/english-tutor && git pull" && proot-distro login debian -- cat /root/english-tutor/install-shortcuts.sh | bash
+   ```
+3. 홈 화면 길게 누르기 → 위젯 → **Termux:Widget** → 바로가기 **English Buddy** / **English Buddy 끄기** 추가
+
+## 4. 매일 쓰기
+1. 홈 화면 **English Buddy** 아이콘 탭 → 서버가 자동으로 켜지고 앱이 열려요
+2. 큰 동그라미 탭 → 선생님이 먼저 말을 걸어요
+3. 다 쓰면 **English Buddy 끄기** 아이콘 (또는 앱 아래 "서버 끄기")
 
 | 화면 | 의미 |
 |---|---|

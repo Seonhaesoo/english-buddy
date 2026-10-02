@@ -1,0 +1,7 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# 홈 화면 아이콘: 서버 끄기
+curl -s -m 2 -X POST http://localhost:8787/api/shutdown >/dev/null
+sleep 1
+pkill -f "node server.js" 2>/dev/null
+termux-wake-unlock
+termux-toast "English Buddy 꺼짐" 2>/dev/null
