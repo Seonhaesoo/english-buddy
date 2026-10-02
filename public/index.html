@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f1115">
+  <title>English Buddy</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <div class="title">English Buddy</div>
+    <div id="conn" class="conn">연결 확인 중…</div>
+  </header>
+
+  <main>
+    <button id="orb" class="orb idle" aria-label="대화 버튼">
+      <span class="ring"></span>
+      <span id="orbLabel" class="orb-label">탭해서<br>시작</span>
+    </button>
+    <div id="live" class="live" aria-live="polite"></div>
+  </main>
+
+  <section id="log" class="log" aria-label="대화 기록"></section>
+
+  <nav class="controls">
+    <button id="btnSlow" title="마지막 말 천천히 다시">🐢<span>천천히 다시</span></button>
+    <button id="btnKo" title="한국어로 한 번 말하기">🇰🇷<span>한국어로</span></button>
+    <button id="btnPause" title="자동 듣기 켜고 끄기">⏸<span>일시정지</span></button>
+    <button id="btnReset" title="새 대화">↺<span>새 대화</span></button>
+  </nav>
+
+  <footer>
+    <label class="rate">말하기 속도
+      <input id="rate" type="range" min="0.6" max="1.1" step="0.05" value="0.85">
+      <output id="rateOut">0.85</output>
+    </label>
+    <details class="voices">
+      <summary>목소리 설정</summary>
+      <label>영어 목소리 <select id="voiceEn"></select></label>
+      <label>한국어 목소리 <select id="voiceKo"></select></label>
+      <button id="btnPreview" type="button">▶ 미리듣기</button>
+    </details>
+    <div id="stats" class="stats"></div>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>

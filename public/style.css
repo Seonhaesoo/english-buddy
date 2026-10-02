@@ -1,0 +1,86 @@
+:root {
+  --bg: #0f1115;
+  --panel: #181b22;
+  --text: #eef1f6;
+  --muted: #8b93a3;
+  --accent: #4f8cff;
+  --listen: #22c55e;
+  --think: #f59e0b;
+  --speak: #4f8cff;
+  --err: #ef4444;
+  --me: #22314d;
+  --tutor: #1f2430;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f5f6f9; --panel: #ffffff; --text: #151821; --muted: #5d6575;
+    --me: #dce7ff; --tutor: #eceff4;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--bg); color: var(--text);
+  font-family: system-ui, -apple-system, "Noto Sans KR", sans-serif;
+  display: flex; flex-direction: column;
+  padding: env(safe-area-inset-top) 16px env(safe-area-inset-bottom);
+  overflow: hidden;
+}
+header { display: flex; justify-content: space-between; align-items: center; padding: 12px 0 4px; }
+.title { font-weight: 700; font-size: 18px; }
+.conn { font-size: 12px; color: var(--muted); }
+.conn.ok { color: var(--listen); }
+.conn.bad { color: var(--err); }
+
+main { display: flex; flex-direction: column; align-items: center; padding: 12px 0; }
+.orb {
+  position: relative; width: min(56vw, 240px); aspect-ratio: 1; border-radius: 50%;
+  border: none; cursor: pointer; color: #fff; font-size: 20px; font-weight: 700;
+  background: #2a2f3a; transition: background .25s, transform .1s;
+  -webkit-tap-highlight-color: transparent;
+}
+.orb:active { transform: scale(.97); }
+.orb .ring { position: absolute; inset: -10px; border-radius: 50%; border: 4px solid transparent; }
+.orb.listening { background: var(--listen); }
+.orb.listening .ring { border-color: var(--listen); animation: pulse 1.4s infinite; }
+.orb.thinking { background: var(--think); }
+.orb.thinking .ring { border-color: var(--think); border-top-color: transparent; animation: spin 1s linear infinite; }
+.orb.speaking { background: var(--speak); }
+.orb.speaking .ring { border-color: var(--speak); animation: pulse 0.9s infinite; }
+.orb.paused { background: #3a3f4b; }
+.orb.error { background: var(--err); }
+.orb-label { position: relative; line-height: 1.35; }
+@keyframes pulse { 0% { transform: scale(1); opacity: .9 } 100% { transform: scale(1.18); opacity: 0 } }
+@keyframes spin { to { transform: rotate(360deg) } }
+
+.live { min-height: 2.6em; margin-top: 14px; text-align: center; color: var(--muted); font-size: 16px; max-width: 100%; }
+
+.log {
+  flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;
+  padding: 8px 0; -webkit-overflow-scrolling: touch;
+}
+.msg { max-width: 85%; padding: 10px 14px; border-radius: 16px; font-size: 17px; line-height: 1.45; word-break: break-word; }
+.msg.me { align-self: flex-end; background: var(--me); border-bottom-right-radius: 4px; }
+.msg.tutor { align-self: flex-start; background: var(--tutor); border-bottom-left-radius: 4px; }
+.msg.sys { align-self: center; background: none; color: var(--err); font-size: 14px; text-align: center; }
+
+.controls { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; padding: 8px 0; }
+.controls button {
+  background: var(--panel); color: var(--text); border: 1px solid #ffffff14; border-radius: 14px;
+  padding: 10px 4px; font-size: 22px; display: flex; flex-direction: column; align-items: center; gap: 2px;
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+.controls button span { font-size: 12px; color: var(--muted); }
+.controls button.on { outline: 2px solid var(--accent); }
+
+footer { padding: 4px 0 12px; font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 6px; }
+.rate { display: flex; align-items: center; gap: 8px; }
+.rate input { flex: 1; }
+.stats { min-height: 1.2em; }
+.voices summary { cursor: pointer; padding: 2px 0; }
+.voices label { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; }
+.voices select, .voices button {
+  flex: 1; max-width: 70%; background: var(--panel); color: var(--text);
+  border: 1px solid #ffffff22; border-radius: 8px; padding: 6px; font-size: 13px;
+}
+.voices button { margin-top: 6px; max-width: none; width: 100%; cursor: pointer; }
