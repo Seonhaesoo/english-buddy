@@ -685,7 +685,7 @@ async function loadHome() {
     $('levelNum').textContent = lv ?? '-';
     $('levelBar').innerHTML = Array.from({ length: 10 }, (_, i) => `<i class="${lv && i < lv ? 'on' : ''}"></i>`).join('');
     $('levelDesc').textContent = lv ? levelDesc(lv) : '첫 수업에서 레벨을 알아봐요';
-    $('nextLabel').textContent = `${p.plan.lessonNo}번째 수업 · 오늘의 주제`;
+    $('nextLabel').textContent = p.plan.step ? `🔰 입문 과정 ${p.plan.step} / ${p.plan.steps}단계 · ${p.plan.lessonNo}번째 수업` : `${p.plan.lessonNo}번째 수업 · 오늘의 주제`;
     $('nextFocus').textContent = p.plan.focus;
     const rv = p.reviews || { due: 0, total: 0 };
     $('reviewInfo').textContent = rv.total
@@ -718,6 +718,7 @@ async function startLesson() {
   $('lessonTitle').textContent = `${plan.lessonNo || ''}번째 수업`;
   showScreen('lesson');
   tickTimer();
+  if (plan.step) return ask(`[수업 시작. 일본어 입문 과정 ${plan.step}단계 수업이야. 한국어로 반갑게 인사하고, 지난 수업 기록이 있으면 아주 짧게 복습한 뒤, 오늘 배울 내용을 한 문장으로 소개하고 첫 번째 표현부터 가르쳐.]`, { hidden: true });
   ask(`[수업 시작. ${plan.lessonNo}번째 수업이야. 한국어로 짧게 반갑게 인사하고, 지난 수업 기록이 있으면 짧게 복습한 뒤, 오늘의 주제로 아주 쉬운 ${target().name} 질문 하나를 해.]`, { hidden: true });
 }
 
@@ -775,6 +776,7 @@ async function finishLesson() {
       <div class="r-sec"><div class="label">✏️ 고칠 점</div><p>${esc(ev.improve)}</p></div>
       ${ev.mistakes?.length ? `<div class="r-sec"><div class="label">틀린 문장 → 맞는 문장 (복습 목록에 추가됐어요)</div><ul>${ev.mistakes.map((m) => typeof m === 'string' ? `<li>${esc(m)}</li>` : `<li>${esc(m.wrong)} → <b>${esc(m.right)}</b>${m.meaning ? ` <span class="muted">(${esc(m.meaning)})</span>` : ''}</li>`).join('')}</ul></div>` : ''}
       ${ev.reviewed?.length ? `<div class="r-sec"><div class="label">오늘 복습한 문장</div><ul>${ev.reviewed.map((r) => `<li>${r.ok ? '✅' : '🔁'} ${esc(r.right)}</li>`).join('')}</ul></div>` : ''}
+      ${ev.step ? `<div class="r-sec"><div class="label">입문 과정</div><p>${ev.step_passed ? `🎉 ${ev.step}단계 통과! 다음 수업은 ${ev.step + 1}단계예요` : `${ev.step}단계를 한 번 더 연습해요. 천천히 해도 괜찮아요`}</p></div>` : ''}
       <div class="r-sec"><div class="label">다음 수업</div><p>${esc(ev.next_focus)}</p></div>
     </div>`;
   loadHome();

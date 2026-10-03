@@ -176,6 +176,22 @@ const PROMPT_JA = `너는 한국인 학생 1명과 "전화 일본어" 수업을 
 - 문법 교정이 없는 차례이거나 발음 문제가 뜻을 헷갈리게 할 정도면, 짧게 한 문장으로 발음 팁을 줘. 문법 교정이 있으면 발음은 넘어가도 돼.
 - 발음 메모 자체를 읽어주거나 "음성 분석 결과" 같은 말은 하지 마.`;
 
+// 일본어 입문 과정: 한 수업에 한 단계. 그 단계 표현을 혼자 말할 수 있으면 다음 단계로.
+const CURRICULUM_JA = [
+  { title: '인사하기', phrases: ['おはようございます (안녕하세요, 아침)', 'こんにちは (안녕하세요, 낮)', 'こんばんは (안녕하세요, 저녁)', 'ありがとうございます (감사합니다)'] },
+  { title: '자기소개', phrases: ['はじめまして (처음 뵙겠습니다)', 'わたしは ○○です (저는 ○○입니다)', 'よろしくおねがいします (잘 부탁드립니다)'] },
+  { title: '네 / 아니요', phrases: ['はい (네)', 'いいえ (아니요)', '○○です (○○입니다)', '○○じゃないです (○○이 아닙니다)'] },
+  { title: '사과와 부탁', phrases: ['すみません (실례합니다/죄송합니다)', 'ごめんなさい (미안해요)', 'おねがいします (부탁합니다)', 'だいじょうぶです (괜찮아요)'] },
+  { title: '숫자 1~10과 시간', phrases: ['いち に さん し ご (1~5)', 'ろく なな はち きゅう じゅう (6~10)', 'いま なんじですか (지금 몇 시예요?)', '○じです (○시예요)'] },
+  { title: '주문하기', phrases: ['これ ください (이거 주세요)', 'コーヒー ください (커피 주세요)', 'いくらですか (얼마예요?)', 'おいしいです (맛있어요)'] },
+  { title: '좋아해요', phrases: ['○○が すきです (○○을 좋아해요)', '○○が すきじゃないです (○○을 안 좋아해요)', 'なにが すきですか (뭘 좋아해요?)'] },
+  { title: '먹다 · 마시다', phrases: ['たべます (먹어요)', 'のみます (마셔요)', '○○を たべます (○○을 먹어요)', '○○を のみます (○○을 마셔요)'] },
+  { title: '어제 한 일 (과거형)', phrases: ['たべました (먹었어요)', 'のみました (마셨어요)', 'きのう ○○を たべました (어제 ○○을 먹었어요)'] },
+  { title: '가다 · 오다', phrases: ['いきます (가요)', 'きます (와요)', 'かいしゃに いきます (회사에 가요)', 'うちに かえります (집에 가요)'] },
+  { title: '언제 (오늘 · 내일 · 매일)', phrases: ['きょう (오늘)', 'あした (내일)', 'まいにち (매일)', 'あした かいしゃに いきます (내일 회사에 가요)'] },
+  { title: '하고 싶어요', phrases: ['○○が たべたいです (○○이 먹고 싶어요)', '○○に いきたいです (○○에 가고 싶어요)', 'なにが したいですか (뭘 하고 싶어요?)'] },
+];
+
 const SUBJECTS = {
   en: { name: '영어', prompt: PROMPT_EN, file: 'progress.json', firstFocus: '자기소개와 오늘 하루 이야기 (첫 수업이라 레벨 파악)' },
   ja: { name: '일본어', prompt: PROMPT_JA, file: 'progress-ja.json', firstFocus: '인사와 자기소개 (첫 수업이라 레벨 파악)' },
@@ -190,6 +206,7 @@ const EVAL_PROMPT = `[수업 종료. 이번 응답은 학생에게 들리지 않
  "reviewed": [{"right": "이번 수업에서 복습시킨 문장 그대로", "ok": 학생이 맞게 말했으면 true, 틀렸거나 못했으면 false}],
  "next_focus": "다음 수업에서 연습할 주제와 표현 한 줄"}
 reviewed 는 시스템이 알려준 "오늘 복습할 문장"을 실제로 시켜본 것만 넣어. 없으면 빈 배열.
+입문 과정 수업이었다면 "step_passed": 이번 단계 표현을 학생이 대부분 혼자(힌트 없이) 말할 수 있었으면 true, 아니면 false 도 넣어.
 모든 설명은 한국어로. 레벨은 위의 레벨 기준으로, 오늘 학생이 실제로 말한 외국어(배우는 언어)만 보고 정해.`;
 
 function loadProgress() {
@@ -209,9 +226,23 @@ function loadProgress() {
   return p;
 }
 
+function curriculumStep() {
+  if (subject() !== 'ja') return null;
+  const step = loadProgress().step || 1;
+  return step <= CURRICULUM_JA.length ? step : null; // 다 끝나면 자유 회화
+}
+
 function currentPlan() {
   const lessons = loadProgress().lessons;
   const last = lessons[lessons.length - 1];
+  const step = curriculumStep();
+  if (step) {
+    return {
+      lessonNo: lessons.length + 1, level: last?.level ?? null, subject: subject(),
+      step, steps: CURRICULUM_JA.length,
+      focus: `${step}단계: ${CURRICULUM_JA[step - 1].title} (${CURRICULUM_JA[step - 1].phrases.map((p) => p.split(' (')[0]).join(', ')})`,
+    };
+  }
   return {
     lessonNo: lessons.length + 1,
     level: last?.level ?? null,
@@ -264,12 +295,26 @@ function loadLearnerNotes() {
   const { lessons } = loadProgress();
   const plan = currentPlan();
   let t = `\n\n이번 수업: ${plan.lessonNo}번째 수업. 오늘의 주제: ${plan.focus}`;
+  if (plan.step) {
+    const c = CURRICULUM_JA[plan.step - 1];
+    t += `
+
+[입문 과정 ${plan.step} / ${plan.steps}단계: ${c.title}] 학생은 완전 초보라 자유 회화는 아직 못 해. 이번 수업은 아래 표현만 가르쳐:
+${c.phrases.map((p) => '- ' + p).join('\n')}
+입문 과정 진행 방법 (자유 회화 규칙보다 이게 우선):
+1. 표현을 하나씩: 한국어로 언제 쓰는지 한 문장 → 일본어 표현을 또박또박 → "따라 해보세요"로 끝내고 [[ja]]. 한 턴에 표현 하나만.
+2. 학생이 따라 하면 칭찬하고 다음 표현으로. 틀리면 그 부분만 다시 들려주고 한 번 더.
+3. 표현을 다 배웠으면 배운 표현만으로 아주 짧은 문답 연습. 질문하기 전에 반드시 "대답은 이렇게 하면 돼요: (일본어 대답)" 처럼 대답 방법을 먼저 알려줘.
+4. 학생이 대답을 못 하면 기다리지 말고 정답을 알려주고 따라 하게 해.
+5. 이번 단계에 없는 새 단어나 문법은 쓰지 마. 이전 단계 표현은 써도 돼.
+6. 한국어 설명은 넉넉하게. 일본어는 짧게.`;
+  }
   const due = dueReviews();
   if (due.length) {
     t += '\n오늘 복습할 문장 (예전에 틀렸던 것. 수업 초반에 하나씩, 한국어 뜻을 말해주고 배우는 언어로 말해보게 해. 맞히면 칭찬, 틀리면 맞는 문장을 알려주고 한 번 더):';
     for (const r of due) t += `\n- 뜻: ${r.meaning || '(없음)'} / 맞는 문장: ${r.right} / 예전에 틀린 말: ${r.wrong}`;
   }
-  if (!lessons.length) return t + '\n첫 수업이야. 아주 쉬운 질문부터 시작해서 학생 레벨을 파악해.';
+  if (!lessons.length) return t + (plan.step ? '' : '\n첫 수업이야. 아주 쉬운 질문부터 시작해서 학생 레벨을 파악해.');
   t += `\n학생의 현재 레벨: ${plan.level} / 10\n지난 수업 기록 (최근 순):`;
   for (const l of lessons.slice(-3).reverse()) {
     t += `\n- ${l.date} 레벨 ${l.level}: ${l.summary} / 고칠 점: ${l.improve} / 실수: ${(l.mistakes || []).map((m) => asMistake(m)).filter(Boolean).map((m) => m.wrong + ' → ' + m.right).join(', ')}`;
@@ -415,6 +460,12 @@ class Tutor {
     const p = loadProgress();
     ev.mistakes = (ev.mistakes || []).map(asMistake).filter(Boolean);
     updateReviews(p, ev);
+    const step = curriculumStep();
+    if (step) {
+      ev.step = step;
+      if (ev.step_passed) p.step = step + 1;
+      else p.step = step;
+    }
     p.lessons.push(ev);
     fs.writeFileSync(progressFile(), JSON.stringify(p, null, 2));
     this.stop();
