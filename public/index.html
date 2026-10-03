@@ -90,6 +90,11 @@
             <option value="haiku">빠른 응답</option>
           </select>
         </label>
+        <label class="row">말 끝 기다리기
+          <input id="endSilence" type="range" min="1000" max="5000" step="250" value="2500">
+          <output id="silOut">2.5초</output>
+        </label>
+        <div id="sttInfo" class="usage"></div>
         <label class="row">블루투스 대기
           <input id="btDelay" type="range" min="0" max="2000" step="100" value="800">
           <output id="btOut">0.8초</output>

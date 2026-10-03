@@ -6,6 +6,8 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import os from 'node:os';
+import { execFile } from 'node:child_process';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -440,6 +442,107 @@ async function handleChat(req, res) {
   res.end();
 }
 
+// ---------------------------------------------------------------- 음성 인식 (STT)
+// 앱이 직접 녹음한 파일(webm/opus)을 받아서 글자로 바꾼다.
+// 1순위 Google Cloud Speech-to-Text (한국어+영어 섞인 말도 인식), 무료 60분/월을 다 쓰면
+// 2순위 Whisper (폰 안에서 직접, 무료·무제한). 둘 다 없으면 앱이 크롬 기본 인식을 쓴다.
+const GOOGLE_KEY = process.env.GOOGLE_API_KEY || process.env.GOOGLE_TTS_API_KEY;
+const STT_MONTHLY_SECONDS = Number(process.env.STT_MONTHLY_SECONDS || 55 * 60); // 무료 60분 중 55분까지만
+const WHISPER_BIN = process.env.WHISPER_BIN || path.join(os.homedir(), 'whisper.cpp/build/bin/whisper-cli');
+const WHISPER_MODEL = process.env.WHISPER_MODEL || path.join(os.homedir(), 'whisper.cpp/models/ggml-base.bin');
+const hasWhisper = () => fs.existsSync(WHISPER_BIN) && fs.existsSync(WHISPER_MODEL);
+
+function sttUsage() {
+  const u = loadSettings().sttUsage;
+  return u && u.month === monthKey() ? u.seconds : 0;
+}
+function addSttUsage(sec) {
+  const st = loadSettings();
+  fs.writeFileSync(SETTINGS_FILE, JSON.stringify({ ...st, sttUsage: { month: monthKey(), seconds: sttUsage() + sec } }));
+}
+
+function readRaw(req, limit = 8 * 1024 * 1024) {
+  return new Promise((resolve, reject) => {
+    const parts = [];
+    let n = 0;
+    req.on('data', (c) => { n += c.length; if (n > limit) reject(new Error('too large')); else parts.push(c); });
+    req.on('end', () => resolve(Buffer.concat(parts)));
+    req.on('error', reject);
+  });
+}
+
+async function sttGoogle(audio, lang) {
+  const primary = lang === 'en' ? 'en-US' : 'ko-KR';
+  const r = await fetch('https://speech.googleapis.com/v1p1beta1/speech:recognize', {
+    method: 'POST',
+    headers: { 'x-goog-api-key': GOOGLE_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      config: {
+        encoding: 'WEBM_OPUS',
+        languageCode: primary,
+        alternativeLanguageCodes: [primary === 'en-US' ? 'ko-KR' : 'en-US'],
+        enableAutomaticPunctuation: true,
+      },
+      audio: { content: audio.toString('base64') },
+    }),
+  });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(`Google STT ${r.status}: ${body.error?.message || ''}`.slice(0, 300));
+  // 청구된 시간(예: "15s")을 그대로 사용량에 더한다
+  const billed = parseFloat(String(body.totalBilledTime || '15s')) || 15;
+  addSttUsage(billed);
+  return (body.results || []).map((x) => x.alternatives?.[0]?.transcript || '').join(' ').trim();
+}
+
+function run(cmd, args, timeout = 60000) {
+  return new Promise((resolve, reject) => {
+    execFile(cmd, args, { timeout, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) reject(new Error(`${path.basename(cmd)} 실패: ${String(stderr || err.message).slice(-300)}`));
+      else resolve(stdout);
+    });
+  });
+}
+
+async function sttWhisper(audio, lang) {
+  const base = path.join(os.tmpdir(), 'eb-' + Date.now());
+  fs.writeFileSync(base + '.webm', audio);
+  try {
+    await run('ffmpeg', ['-y', '-loglevel', 'error', '-i', base + '.webm', '-ar', '16000', '-ac', '1', base + '.wav']);
+    const threads = String(Math.min(8, Math.max(2, os.cpus().length)));
+    const out = await run(WHISPER_BIN, ['-m', WHISPER_MODEL, '-f', base + '.wav', '-l', lang === 'en' ? 'en' : 'auto', '-nt', '-np', '-t', threads]);
+    return out.replace(/\[[^\]]*\]/g, '').replace(/\s+/g, ' ').trim();
+  } finally {
+    for (const ext of ['.webm', '.wav']) fs.rmSync(base + ext, { force: true });
+  }
+}
+
+function sttEngines() {
+  const list = [];
+  if (GOOGLE_KEY && sttUsage() < STT_MONTHLY_SECONDS) list.push('google');
+  if (hasWhisper()) list.push('whisper');
+  return list;
+}
+
+async function handleStt(req, res) {
+  const lang = req.headers['x-lang'] === 'en' ? 'en' : 'ko';
+  const audio = await readRaw(req);
+  if (audio.length < 1000) return json(res, 200, { text: '', engine: null });
+  const engines = sttEngines();
+  if (!engines.length) return json(res, 404, { error: 'no stt engine' });
+  let lastErr;
+  for (const engine of engines) {
+    try {
+      const t0 = Date.now();
+      const text = engine === 'google' ? await sttGoogle(audio, lang) : await sttWhisper(audio, lang);
+      return json(res, 200, { text, engine, ms: Date.now() - t0 });
+    } catch (err) {
+      console.error('[stt]', err.message);
+      lastErr = err;
+    }
+  }
+  return json(res, 502, { error: lastErr?.message || 'stt failed' });
+}
+
 function serveStatic(req, res) {
   const url = new URL(req.url, 'http://x');
   let file = path.normalize(path.join(PUBLIC_DIR, decodeURIComponent(url.pathname)));
@@ -516,6 +619,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, 500, { error: err.message });
       }
     }
+    if (req.method === 'POST' && req.url === '/api/stt') return await handleStt(req, res);
     if (req.method === 'GET' && req.url === '/api/progress') {
       return json(res, 200, { plan: currentPlan(), lessons: loadProgress().lessons.slice(-20).reverse() });
     }
@@ -524,7 +628,8 @@ const server = http.createServer(async (req, res) => {
         tts: TTS_PROVIDER ? {
           provider: TTS_PROVIDER, voice: ttsVoice(), voices: TTS_VOICES,
           used: TTS_PROVIDER === 'google' ? ttsUsage() : null, limit: TTS_MONTHLY_LIMIT,
-        } : null });
+        } : null,
+        stt: { engines: sttEngines(), googleSeconds: GOOGLE_KEY ? Math.round(sttUsage()) : null, googleLimit: STT_MONTHLY_SECONDS, whisper: hasWhisper() } });
     }
     if (req.method === 'GET') return serveStatic(req, res);
     json(res, 405, { error: 'method not allowed' });

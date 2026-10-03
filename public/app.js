@@ -25,6 +25,8 @@ const S = {
   phase: 'home',         // home | lesson | wrapping | result
   lessonEndAt: 0,        // 10분 수업이 끝나는 시각
   timeUp: false,
+  endSilence: Number(localStorage.getItem('endSilence') ?? 2500), // 말을 멈춘 뒤 이만큼 조용하면 끝난 걸로 (ms)
+  sttServer: false,      // 서버 음성 인식(Google/Whisper) 사용 가능 여부
 };
 const LESSON_MS = 10 * 60 * 1000;
 
@@ -32,7 +34,7 @@ const LESSON_MS = 10 * 60 * 1000;
 
 const LABELS = {
   idle: '탭해서<br>말하기',
-  listening: '듣는 중…',
+  listening: '듣는 중…<br><small>다 말했으면 탭</small>',
   thinking: '생각 중…',
   speaking: '말하는 중<br><small>탭하면 끊기</small>',
   paused: '일시정지<br><small>탭해서 계속</small>',
@@ -330,6 +332,122 @@ function setListenLang(lang) {
 // ------------------------------------------------------------------ 음성 인식 (STT)
 
 function listen(lang = S.listenLang) {
+  if (S.sttServer && navigator.mediaDevices?.getUserMedia && window.MediaRecorder) return listenRecord(lang);
+  return listenBrowser(lang);
+}
+
+// ---- 직접 녹음: 말을 멈춰도 S.endSilence 동안은 기다려준다 (초보는 생각하면서 말하니까)
+async function listenRecord(lang = S.listenLang) {
+  stopSpeech();
+  unlockAudio();
+  setMode('listening', '마이크 준비 중…');
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+  } catch {
+    setMode('error', '마이크 권한이 필요해요. 주소창 왼쪽 자물쇠 → 권한 → 마이크 허용');
+    return;
+  }
+  const rec = new MediaRecorder(stream, MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? { mimeType: 'audio/webm;codecs=opus' } : {});
+  const chunks = [];
+  rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+
+  // 소리 크기로 "말하는 중 / 조용함" 판단 (주변 소음에 맞춰 기준을 자동으로 잡음)
+  const src = audioCtx.createMediaStreamSource(stream);
+  const an = audioCtx.createAnalyser();
+  an.fftSize = 1024;
+  src.connect(an);
+  const buf = new Float32Array(an.fftSize);
+  const t0 = Date.now();
+  let floor = 0.01, floorN = 0, spoke = false, speechMs = 0, lastVoice = 0, done = false;
+
+  const ctl = { stop: (send) => finish(send) };
+  S.rec = ctl;
+
+  const timer = setInterval(() => {
+    an.getFloatTimeDomainData(buf);
+    let sum = 0;
+    for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+    const rms = Math.sqrt(sum / buf.length);
+    const now = Date.now();
+    if (now - t0 < 400) { floor = (floor * floorN + rms) / ++floorN; return; } // 처음 0.4초: 주변 소음 측정
+    const loud = rms > Math.max(0.02, floor * 3);
+    if (loud) {
+      speechMs += 50;
+      lastVoice = now;
+      if (speechMs >= 200) spoke = true;
+    } else if (!spoke) {
+      floor = floor * 0.98 + rms * 0.02;
+    }
+    if (spoke) {
+      const quiet = now - lastVoice;
+      if (quiet > 600) {
+        const left = Math.max(0, S.endSilence - quiet);
+        live.textContent = `조용하면 ${(left / 1000).toFixed(1)}초 뒤 보내요 · 계속 말해도 돼요`;
+      } else {
+        live.textContent = '듣고 있어요… 천천히 말해도 기다려요';
+      }
+      if (quiet >= S.endSilence) finish(true);
+    } else if (now - t0 > 10000) {
+      finish(false); // 10초 동안 아무 말 없음
+    }
+    if (now - t0 > 45000) finish(true); // 너무 길면 끊어서 보냄
+  }, 50);
+
+  function finish(send) {
+    if (done) return;
+    done = true;
+    clearInterval(timer);
+    if (S.rec === ctl) S.rec = null;
+    rec.onstop = () => {
+      stream.getTracks().forEach((t) => t.stop()); // 마이크를 바로 놓아줘야 블루투스 음질이 돌아온다
+      try { src.disconnect(); } catch {}
+      handleRecording(send && spoke ? new Blob(chunks, { type: rec.mimeType || 'audio/webm' }) : null, lang);
+    };
+    try { rec.stop(); } catch { rec.onstop(); }
+  }
+
+  rec.start(250);
+  setMode('listening', lang === 'en-US' ? '영어로 말해보세요… 천천히 해도 기다려요' : '말해보세요… 천천히 해도 기다려요');
+}
+
+async function handleRecording(blob, lang) {
+  if (S.phase !== 'lesson' && S.phase !== 'wrapping') return;
+  if (!blob) {
+    // 아무 말도 없었음
+    if (S.mode !== 'listening') return; // 사용자가 직접 멈춤
+    if (S.timeUp) { setMode('idle', ''); return wrapUp(); }
+    S.silentTries += 1;
+    if (S.handsFree && S.silentTries < 4) return listen(lang);
+    S.silentTries = 0;
+    return setMode('paused', '조용해서 잠깐 쉬어요. 동그라미를 누르면 다시 들어요.');
+  }
+  S.silentTries = 0;
+  setMode('thinking', '알아듣는 중…');
+  try {
+    const r = await fetch('/api/stt', {
+      method: 'POST',
+      headers: { 'Content-Type': blob.type, 'X-Lang': lang === 'en-US' ? 'en' : 'ko' },
+      body: blob,
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || 'stt ' + r.status);
+    if (!j.text) {
+      addMsg('sys', '잘 못 들었어요. 한 번만 다시 말해 주세요');
+      return listen(lang);
+    }
+    ask(j.text);
+  } catch (err) {
+    // 서버 인식이 안 되면 이번 수업은 크롬 기본 인식으로
+    S.sttServer = false;
+    addMsg('sys', '🎙 음성 인식 서버 문제로 기본 인식으로 바꿨어요. 다시 말해 주세요');
+    listenBrowser(lang);
+  }
+}
+
+function listenBrowser(lang = S.listenLang) {
   if (!SR) {
     setMode('error', '이 브라우저는 음성 인식을 지원하지 않아요. 안드로이드 크롬을 써주세요.');
     return;
@@ -384,7 +502,10 @@ function listen(lang = S.listenLang) {
 }
 
 function stopListening() {
-  if (S.rec) { const r = S.rec; r.stop(); }
+  if (!S.rec) return;
+  const r = S.rec;
+  if (r.abort) r.stop(); // 크롬 기본 인식
+  else r.stop(false);    // 직접 녹음: 보내지 않고 멈춤
 }
 
 // ------------------------------------------------------------------ 서버 대화
@@ -472,7 +593,7 @@ orb.addEventListener('click', () => {
   if (S.phase !== 'lesson') return;
   switch (S.mode) {
     case 'speaking': stopSpeech(); listen(); break;          // 말 끊고 바로 내 차례
-    case 'listening': S.mode = 'idle'; stopListening(); setMode('idle', ''); break;
+    case 'listening': if (S.rec?.stop) S.rec.stop(true); else { S.mode = 'idle'; stopListening(); setMode('idle', ''); } break;
     case 'thinking': break;
     default: S.silentTries = 0; listen();
   }
@@ -647,6 +768,15 @@ $('btnEnd').addEventListener('click', () => {
 $('btnSettings').addEventListener('click', () => { $('sheet').hidden = false; });
 document.querySelectorAll('[data-close]').forEach((el) => el.addEventListener('click', () => { $('sheet').hidden = true; }));
 
+$('endSilence').value = S.endSilence;
+const showSil = () => ($('silOut').textContent = (S.endSilence / 1000).toFixed(1) + '초');
+showSil();
+$('endSilence').addEventListener('input', (e) => {
+  S.endSilence = Number(e.target.value);
+  showSil();
+  try { localStorage.setItem('endSilence', S.endSilence); } catch {}
+});
+
 $('btDelay').value = S.btDelay;
 const showBt = () => ($('btOut').textContent = (S.btDelay / 1000).toFixed(1) + '초');
 showBt();
@@ -688,6 +818,12 @@ async function checkServer() {
     }
     if (s.tts && document.activeElement !== $('aiVoice')) $('aiVoice').value = s.tts.voice;
     $('sysVoices').hidden = !!s.tts;
+    S.sttServer = !!s.stt?.engines?.length;
+    const sttName = { google: 'Google', whisper: 'Whisper(폰)' };
+    $('sttInfo').textContent = s.stt
+      ? `음성 인식: ${s.stt.engines.map((e) => sttName[e]).join(' → ') || '크롬 기본'}` +
+        (s.stt.googleSeconds != null ? ` · Google 이번 달 ${Math.floor(s.stt.googleSeconds / 60)} / ${Math.floor(s.stt.googleLimit / 60)}분 (넘으면 Whisper)` : '')
+      : '';
     $('ttsUsage').textContent = s.tts?.used != null
       ? `AI 음성 이번 달 ${s.tts.used.toLocaleString()} / ${s.tts.limit.toLocaleString()}자 (넘으면 자동으로 기본 음성)`
       : '';
