@@ -1,5 +1,5 @@
 // 앱 화면만 캐시(설치용). /api 는 항상 네트워크.
-const CACHE = 'english-buddy-v12';
+const CACHE = 'english-buddy-v13';
 const SHELL = ['/', '/index.html', '/style.css', '/app.js', '/manifest.webmanifest', '/icon.svg'];
 
 self.addEventListener('install', (e) => {

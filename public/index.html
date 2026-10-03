@@ -40,6 +40,12 @@
 
     <button id="btnStart" class="start-btn">▶ 10분 수업 시작</button>
 
+    <div class="card review-card">
+      <div class="label">📝 틀린 문장 복습</div>
+      <div id="reviewInfo" class="review-info">수업에서 틀린 문장이 여기에 모여요</div>
+      <button id="btnListen" class="wide-btn" disabled>🎧 듣기 복습 (운전 중 듣기만)</button>
+    </div>
+
     <h2 class="section-title">지난 수업</h2>
     <div id="history" class="history"><div class="empty">아직 수업 기록이 없어요</div></div>
   </section>
@@ -66,6 +72,25 @@
       <button id="btnSlow">🐢<span>천천히 다시</span></button>
       <button id="btnKo">🇰🇷<span>한국어로 듣는 중</span></button>
       <button id="btnPause">⏸<span>일시정지</span></button>
+    </nav>
+  </section>
+
+  <!-- 듣기 복습 -->
+  <section id="review" class="screen lesson" hidden>
+    <header class="top">
+      <div class="title small">🎧 듣기 복습</div>
+      <div id="rvCount" class="timer">-</div>
+    </header>
+    <div class="review-stage">
+      <div id="rvLabel" class="label">뜻</div>
+      <div id="rvMeaning" class="rv-meaning"></div>
+      <div id="rvHint" class="label rv-hint"></div>
+      <div id="rvRight" class="rv-right"></div>
+    </div>
+    <nav class="controls">
+      <button id="rvPause">⏸<span>일시정지</span></button>
+      <button id="rvNext">⏭<span>다음</span></button>
+      <button id="rvStop">⏹<span>끝내기</span></button>
     </nav>
   </section>
 

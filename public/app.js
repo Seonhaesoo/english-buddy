@@ -446,7 +446,7 @@ async function handleRecording(blob, lang) {
       addMsg('sys', '잘 못 들었어요. 한 번만 다시 말해 주세요');
       return listen(lang);
     }
-    ask(j.text);
+    ask(j.text, { pron: j.pron });
   } catch (err) {
     // 서버 인식이 안 되면 이번 수업은 크롬 기본 인식으로
     S.sttServer = false;
@@ -518,7 +518,7 @@ function stopListening() {
 
 // ------------------------------------------------------------------ 서버 대화
 
-async function ask(text, { hidden = false } = {}) {
+async function ask(text, { hidden = false, pron = '' } = {}) {
   if (!hidden) addMsg('me', text);
   setMode('thinking', '');
   stopSpeech();
@@ -535,7 +535,7 @@ async function ask(text, { hidden = false } = {}) {
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, pron }),
     });
     if (!res.ok || !res.body) throw new Error('서버 응답 ' + res.status);
 
@@ -660,7 +660,7 @@ $('btnPause').addEventListener('click', () => {
 // ------------------------------------------------------------------ 화면 / 수업 흐름
 
 function showScreen(name) {
-  for (const id of ['home', 'lesson', 'result']) $(id).hidden = id !== name;
+  for (const id of ['home', 'lesson', 'result', 'review']) $(id).hidden = id !== name;
   window.scrollTo(0, 0);
 }
 
@@ -687,6 +687,11 @@ async function loadHome() {
     $('levelDesc').textContent = lv ? levelDesc(lv) : '첫 수업에서 레벨을 알아봐요';
     $('nextLabel').textContent = `${p.plan.lessonNo}번째 수업 · 오늘의 주제`;
     $('nextFocus').textContent = p.plan.focus;
+    const rv = p.reviews || { due: 0, total: 0 };
+    $('reviewInfo').textContent = rv.total
+      ? `오늘 복습할 문장 ${rv.due}개 · 전체 ${rv.total}개 (수업 처음에 선생님이 다시 시켜요)`
+      : '수업에서 틀린 문장이 여기에 모이고, 잊어버릴 때쯤 다시 복습해요';
+    $('btnListen').disabled = !rv.total;
     $('history').innerHTML = p.lessons.length
       ? p.lessons.map((l) => `<div class="h-item"><div class="h-top"><span>${esc(l.date)}</span><span class="h-level">레벨 ${l.level}</span></div><div class="h-sum">${esc(l.summary)}</div></div>`).join('')
       : '<div class="empty">아직 수업 기록이 없어요</div>';
@@ -768,13 +773,73 @@ async function finishLesson() {
       <div class="r-sec"><div class="label">오늘 한 것</div><p>${esc(ev.summary)}</p></div>
       <div class="r-sec"><div class="label">👍 잘한 점</div><p>${esc(ev.good)}</p></div>
       <div class="r-sec"><div class="label">✏️ 고칠 점</div><p>${esc(ev.improve)}</p></div>
-      ${ev.mistakes?.length ? `<div class="r-sec"><div class="label">틀린 문장 → 맞는 문장</div><ul>${ev.mistakes.map((m) => `<li>${esc(m)}</li>`).join('')}</ul></div>` : ''}
+      ${ev.mistakes?.length ? `<div class="r-sec"><div class="label">틀린 문장 → 맞는 문장 (복습 목록에 추가됐어요)</div><ul>${ev.mistakes.map((m) => typeof m === 'string' ? `<li>${esc(m)}</li>` : `<li>${esc(m.wrong)} → <b>${esc(m.right)}</b>${m.meaning ? ` <span class="muted">(${esc(m.meaning)})</span>` : ''}</li>`).join('')}</ul></div>` : ''}
+      ${ev.reviewed?.length ? `<div class="r-sec"><div class="label">오늘 복습한 문장</div><ul>${ev.reviewed.map((r) => `<li>${r.ok ? '✅' : '🔁'} ${esc(r.right)}</li>`).join('')}</ul></div>` : ''}
       <div class="r-sec"><div class="label">다음 수업</div><p>${esc(ev.next_focus)}</p></div>
     </div>`;
   loadHome();
 }
 
 $('btnStart').addEventListener('click', startLesson);
+
+// ---- 듣기 복습: 한국어 뜻 → (내가 말해볼 시간) → 맞는 문장 → 천천히 한 번 더
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+async function startListenReview() {
+  const { items } = await (await fetch('/api/review/list')).json().catch(() => ({ items: [] }));
+  if (!items?.length) return alert('아직 복습할 문장이 없어요. 수업을 먼저 해보세요!');
+  unlockAudio();
+  keepAwake();
+  S.phase = 'review';
+  S.reviewPaused = false;
+  S.reviewSkip = false;
+  showScreen('review');
+  const say = async (text, rate = 1) => { if (S.phase === 'review') await speakText(text, rate); };
+  const pause = async (ms) => {
+    const until = Date.now() + ms;
+    while (S.phase === 'review' && !S.reviewSkip && (Date.now() < until || S.reviewPaused)) await wait(100);
+  };
+  await wakeAudio();
+  await say(`듣기 복습을 시작할게요. 한국어 뜻을 들으면, 먼저 ${target().name}로 말해보세요.`);
+  for (let i = 0; i < items.length && S.phase === 'review'; i++) {
+    const it = items[i];
+    S.reviewSkip = false;
+    $('rvCount').textContent = `${i + 1} / ${items.length}`;
+    // 뜻이 저장돼 있으면 "뜻 → 말해보기", 없으면(예전 기록) "틀렸던 말 → 고쳐서 말해보기"
+    $('rvLabel').textContent = it.meaning ? '뜻' : '예전에 틀렸던 말';
+    $('rvMeaning').textContent = it.meaning || it.wrong;
+    $('rvRight').textContent = '';
+    $('rvHint').textContent = it.meaning ? '먼저 말해보세요…' : '맞게 고쳐서 말해보세요…';
+    await say(it.meaning ? it.meaning : `예전에 이렇게 말했어요. ${it.wrong}. 맞게 고쳐서 말해보세요.`);
+    await pause(3500);
+    if (S.phase !== 'review') break;
+    $('rvRight').textContent = it.right;
+    $('rvHint').textContent = '정답';
+    if (!S.reviewSkip) await say(it.right);
+    await pause(1500);
+    $('rvHint').textContent = '천천히 한 번 더';
+    if (!S.reviewSkip) await say(it.right, 0.8);
+    await pause(1500);
+  }
+  if (S.phase === 'review') {
+    await say('오늘 듣기 복습 끝! 수고했어요.');
+    endListenReview();
+  }
+}
+function endListenReview() {
+  S.phase = 'home';
+  stopSpeech();
+  try { S.wakeLock?.release(); } catch {}
+  showScreen('home');
+  loadHome();
+}
+$('btnListen').addEventListener('click', startListenReview);
+$('rvStop').addEventListener('click', endListenReview);
+$('rvPause').addEventListener('click', () => {
+  S.reviewPaused = !S.reviewPaused;
+  $('rvPause').querySelector('span').textContent = S.reviewPaused ? '계속' : '일시정지';
+  if (S.reviewPaused) stopSpeech();
+});
+$('rvNext').addEventListener('click', () => { S.reviewSkip = true; stopSpeech(); });
 document.querySelectorAll('[data-subject]').forEach((b) => b.addEventListener('click', async () => {
   if (b.dataset.subject === S.subject) return;
   S.subject = b.dataset.subject;

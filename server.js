@@ -100,7 +100,12 @@ const PROMPT_EN = `너는 한국인 학생 1명과 "전화영어" 수업을 하�
 8 자기 의견을 자연스러운 표현으로 말함
 9 긴 대화를 스스로 이어감
 10 원어민과 일상 대화를 자유롭게 함
-학생 레벨에 맞춰 질문 난이도와 한국어 비중을 조절해. 레벨 1~3은 한국어 설명을 넉넉히, 6 이상은 영어 위주로.`;
+학생 레벨에 맞춰 질문 난이도와 한국어 비중을 조절해. 레벨 1~3은 한국어 설명을 넉넉히, 6 이상은 영어 위주로.
+
+발음 피드백:
+- 학생 말 끝에 (발음 참고: ...) 메모가 붙어 오면, 그건 음성 분석 결과야.
+- 문법 교정이 없는 차례이거나 발음 문제가 뜻을 헷갈리게 할 정도면, 짧게 한 문장으로 발음 팁을 줘. 문법 교정이 있으면 발음은 넘어가도 돼.
+- 발음 메모 자체를 읽어주거나 "음성 분석 결과" 같은 말은 하지 마.`;
 
 const PROMPT_JA = `너는 한국인 학생 1명과 "전화 일본어" 수업을 하는 1:1 일본어 회화 과외 선생님이야. 한국어도 원어민처럼 잘해. 음성으로만 대화해.
 학생은 일본어 완전 초보야(히라가나를 막 배우기 시작한 단계). 운전 중일 수 있어서 화면을 볼 수 없어.
@@ -164,7 +169,12 @@ const PROMPT_JA = `너는 한국인 학생 1명과 "전화 일본어" 수업을 
 8 자기 의견을 자연스러운 표현으로 말함 (N3)
 9 긴 대화를 스스로 이어감 (N2)
 10 원어민과 일상 대화를 자유롭게 함 (N1)
-학생 레벨에 맞춰 질문 난이도와 한국어 비중을 조절해. 레벨 1~3은 한국어 설명을 넉넉히, 6 이상은 일본어 위주로.`;
+학생 레벨에 맞춰 질문 난이도와 한국어 비중을 조절해. 레벨 1~3은 한국어 설명을 넉넉히, 6 이상은 일본어 위주로.
+
+발음 피드백:
+- 학생 말 끝에 (발음 참고: ...) 메모가 붙어 오면, 그건 음성 분석 결과야.
+- 문법 교정이 없는 차례이거나 발음 문제가 뜻을 헷갈리게 할 정도면, 짧게 한 문장으로 발음 팁을 줘. 문법 교정이 있으면 발음은 넘어가도 돼.
+- 발음 메모 자체를 읽어주거나 "음성 분석 결과" 같은 말은 하지 마.`;
 
 const SUBJECTS = {
   en: { name: '영어', prompt: PROMPT_EN, file: 'progress.json', firstFocus: '자기소개와 오늘 하루 이야기 (첫 수업이라 레벨 파악)' },
@@ -175,11 +185,28 @@ const progressFile = () => path.join(__dirname, SUBJECTS[subject()].file);
 
 const EVAL_PROMPT = `[수업 종료. 이번 응답은 학생에게 들리지 않는 기록용이야.]
 오늘 수업 대화 전체를 보고 학생을 평가해서 아래 JSON 하나만 출력해. 다른 글, 코드블록, [[en]] 표시는 쓰지 마.
-{"level": 1~10 정수, "summary": "오늘 한 대화 한 줄 요약", "good": "잘한 점 한 줄", "improve": "가장 먼저 고칠 점 한 줄", "mistakes": ["학생이 말한 틀린 문장 → 맞는 문장", 최대 5개], "next_focus": "다음 수업에서 연습할 주제와 표현 한 줄"}
+{"level": 1~10 정수, "summary": "오늘 한 대화 한 줄 요약", "good": "잘한 점 한 줄", "improve": "가장 먼저 고칠 점 한 줄",
+ "mistakes": [{"wrong": "학생이 말한 틀린 문장", "right": "맞는 문장(배우는 언어)", "meaning": "맞는 문장의 한국어 뜻"}, 최대 5개],
+ "reviewed": [{"right": "이번 수업에서 복습시킨 문장 그대로", "ok": 학생이 맞게 말했으면 true, 틀렸거나 못했으면 false}],
+ "next_focus": "다음 수업에서 연습할 주제와 표현 한 줄"}
+reviewed 는 시스템이 알려준 "오늘 복습할 문장"을 실제로 시켜본 것만 넣어. 없으면 빈 배열.
 모든 설명은 한국어로. 레벨은 위의 레벨 기준으로, 오늘 학생이 실제로 말한 외국어(배우는 언어)만 보고 정해.`;
 
 function loadProgress() {
-  try { return JSON.parse(fs.readFileSync(progressFile(), 'utf8')); } catch { return { lessons: [] }; }
+  let p;
+  try { p = JSON.parse(fs.readFileSync(progressFile(), 'utf8')); } catch { return { lessons: [], reviews: [] }; }
+  // 복습 기능 전에 쌓인 수업 기록: 그때 틀린 문장들을 복습 목록으로 옮기고 오늘부터 복습
+  if (!p.reviews) {
+    p.reviews = [];
+    for (const l of p.lessons) {
+      for (const m of (l.mistakes || []).map(asMistake).filter(Boolean)) {
+        if (!p.reviews.some((x) => norm(x.right) === norm(m.right))) {
+          p.reviews.push({ wrong: m.wrong, right: m.right, meaning: m.meaning || '', step: 0, due: todayStr(), added: todayStr() });
+        }
+      }
+    }
+  }
+  return p;
 }
 
 function currentPlan() {
@@ -193,14 +220,59 @@ function currentPlan() {
   };
 }
 
+// 간격 반복: 맞히면 1 → 3 → 7 → 14 → 30 → 60일 뒤, 틀리면 다음 날 다시
+const INTERVALS = [1, 3, 7, 14, 30, 60];
+const todayStr = (addDays = 0) => {
+  const d = new Date(Date.now() + 9 * 3600 * 1000 + addDays * 86400000); // 한국 시간 기준 날짜
+  return d.toISOString().slice(0, 10);
+};
+const norm = (t) => String(t || '').toLowerCase().replace(/[\s.,!?。、！？'"’]/g, '');
+
+function asMistake(m) {
+  if (m && typeof m === 'object') return m.right ? m : null;
+  const [wrong, right] = String(m || '').split('→').map((x) => x.trim()); // 옛 형식: "틀린 → 맞는"
+  return right ? { wrong, right, meaning: '' } : null;
+}
+
+function updateReviews(p, ev) {
+  p.reviews = p.reviews || [];
+  for (const r of ev.reviewed || []) {
+    const item = p.reviews.find((x) => norm(x.right) === norm(r.right));
+    if (!item) continue;
+    if (r.ok) {
+      item.step = Math.min((item.step || 0) + 1, INTERVALS.length - 1);
+      item.reps = (item.reps || 0) + 1;
+    } else {
+      item.step = 0;
+      item.misses = (item.misses || 0) + 1;
+    }
+    item.due = todayStr(INTERVALS[item.step]);
+  }
+  for (const m of (ev.mistakes || []).map(asMistake).filter(Boolean)) {
+    const old = p.reviews.find((x) => norm(x.right) === norm(m.right));
+    if (old) { old.step = 0; old.due = todayStr(1); old.misses = (old.misses || 0) + 1; continue; }
+    p.reviews.push({ wrong: m.wrong, right: m.right, meaning: m.meaning || '', step: 0, due: todayStr(1), added: todayStr() });
+  }
+}
+
+const dueReviews = (limit = 3) => (loadProgress().reviews || [])
+  .filter((r) => r.due <= todayStr())
+  .sort((a, b) => a.due.localeCompare(b.due) || (b.misses || 0) - (a.misses || 0))
+  .slice(0, limit);
+
 function loadLearnerNotes() {
   const { lessons } = loadProgress();
   const plan = currentPlan();
   let t = `\n\n이번 수업: ${plan.lessonNo}번째 수업. 오늘의 주제: ${plan.focus}`;
+  const due = dueReviews();
+  if (due.length) {
+    t += '\n오늘 복습할 문장 (예전에 틀렸던 것. 수업 초반에 하나씩, 한국어 뜻을 말해주고 배우는 언어로 말해보게 해. 맞히면 칭찬, 틀리면 맞는 문장을 알려주고 한 번 더):';
+    for (const r of due) t += `\n- 뜻: ${r.meaning || '(없음)'} / 맞는 문장: ${r.right} / 예전에 틀린 말: ${r.wrong}`;
+  }
   if (!lessons.length) return t + '\n첫 수업이야. 아주 쉬운 질문부터 시작해서 학생 레벨을 파악해.';
   t += `\n학생의 현재 레벨: ${plan.level} / 10\n지난 수업 기록 (최근 순):`;
   for (const l of lessons.slice(-3).reverse()) {
-    t += `\n- ${l.date} 레벨 ${l.level}: ${l.summary} / 고칠 점: ${l.improve} / 실수: ${(l.mistakes || []).join(', ')}`;
+    t += `\n- ${l.date} 레벨 ${l.level}: ${l.summary} / 고칠 점: ${l.improve} / 실수: ${(l.mistakes || []).map((m) => asMistake(m)).filter(Boolean).map((m) => m.wrong + ' → ' + m.right).join(', ')}`;
   }
   return t;
 }
@@ -341,6 +413,8 @@ class Tutor {
     ev.date = new Date().toLocaleDateString('ko-KR', { timeZone: 'Asia/Seoul' });
     ev.turns = this.lessonTurns;
     const p = loadProgress();
+    ev.mistakes = (ev.mistakes || []).map(asMistake).filter(Boolean);
+    updateReviews(p, ev);
     p.lessons.push(ev);
     fs.writeFileSync(progressFile(), JSON.stringify(p, null, 2));
     this.stop();
@@ -515,7 +589,10 @@ function json(res, code, obj) {
 async function handleChat(req, res) {
   let text;
   try {
-    text = String(JSON.parse(await readBody(req)).text || '').trim();
+    const body = JSON.parse(await readBody(req));
+    text = String(body.text || '').trim();
+    const pron = String(body.pron || '').trim();
+    if (text && pron) text += `\n(발음 참고, 학생에게는 안 보임: ${pron})`;
   } catch {
     return json(res, 400, { error: 'bad request' });
   }
@@ -576,22 +653,36 @@ Rules: keep every grammar mistake exactly as spoken (do NOT correct "I eat yeste
 Rules: keep every grammar, particle and conjugation mistake exactly as spoken (do NOT correct 昨日行きます to 昨日行きました). Write Japanese in natural Japanese script (kana and common kanji) and Korean in Hangul. Do not translate. Output only the transcript. If there is no clear speech, output nothing.`,
 };
 
+const PRON_PROMPT = `
+
+Also listen to the pronunciation of the parts spoken in the language being learned (not the Korean parts).
+Reply ONLY with JSON: {"transcript": "...", "pronunciation": "..."}
+"pronunciation": one short Korean sentence about the single clearest mispronounced SOUND (e.g. "went 끝의 t 소리가 안 들렸어요", "つ를 '쓰'처럼 발음했어요").
+Pronunciation means only how sounds were produced. NEVER mention grammar, tense, word choice or which word should be used — those are not pronunciation.
+Return an empty string unless a sound was clearly wrong enough that a native speaker might misunderstand. Most turns should be empty. Empty if it was all Korean or if you are not sure.`;
+
 async function sttGemini(audio, lang, mime) {
   const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${STT_GEMINI_MODEL}:generateContent`, {
     method: 'POST',
     headers: { 'x-goog-api-key': process.env.GEMINI_API_KEY, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       contents: [{ parts: [
-        { text: STT_PROMPTS[subject()] + (lang === 'en' ? '\nThe speaker is trying to speak English right now.' : lang === 'ja' ? '\nThe speaker is trying to speak Japanese right now.' : '') },
+        { text: STT_PROMPTS[subject()] + (lang === 'en' ? '\nThe speaker is trying to speak English right now.' : lang === 'ja' ? '\nThe speaker is trying to speak Japanese right now.' : '') + PRON_PROMPT },
         { inline_data: { mime_type: mime, data: audio.toString('base64') } },
       ] }],
-      generationConfig: { temperature: 0 },
+      generationConfig: { temperature: 0, responseMimeType: 'application/json' },
     }),
   });
   const body = await r.json().catch(() => ({}));
   if (r.status === 429) throw Object.assign(new Error('Gemini 받아쓰기 무료 한도 초과'), { limited: true });
   if (!r.ok) throw new Error(`Gemini STT ${r.status}: ${body.error?.message || ''}`.slice(0, 300));
-  return (body.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('').trim();
+  const raw = (body.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('').trim();
+  try {
+    const j = JSON.parse(raw.match(/\{[\s\S]*\}/)?.[0] || raw);
+    return { text: String(j.transcript || '').trim(), pron: String(j.pronunciation || '').trim() };
+  } catch {
+    return { text: raw, pron: '' };
+  }
 }
 
 // 한도에 걸린 엔진은 한동안 건너뛴다 (매번 실패를 기다리면 느려지니까)
@@ -666,10 +757,10 @@ async function handleStt(req, res) {
     try {
       const t0 = Date.now();
       const mime = String(req.headers['content-type'] || 'audio/webm').split(';')[0];
-      const text = engine === 'gemini' ? await sttGemini(audio, lang, mime)
-        : engine === 'google' ? await sttGoogle(audio, lang)
-        : await sttWhisper(audio, lang);
-      return json(res, 200, { text, engine, ms: Date.now() - t0 });
+      const out = engine === 'gemini' ? await sttGemini(audio, lang, mime)
+        : { text: engine === 'google' ? await sttGoogle(audio, lang) : await sttWhisper(audio, lang), pron: '' };
+      // 한국어로 말한 차례엔 발음 메모를 쓰지 않는다
+      return json(res, 200, { text: out.text, pron: lang === 'ko' ? '' : out.pron, engine, ms: Date.now() - t0 });
     } catch (err) {
       console.error('[stt]', engine, err.message);
       if (err.limited) sttCooldown[engine] = Date.now() + 60 * 60 * 1000; // 1시간 뒤 다시 시도
@@ -764,7 +855,18 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, currentPlan());
     }
     if (req.method === 'GET' && req.url === '/api/progress') {
-      return json(res, 200, { plan: currentPlan(), lessons: loadProgress().lessons.slice(-20).reverse() });
+      const p = loadProgress();
+      return json(res, 200, {
+        plan: currentPlan(), lessons: p.lessons.slice(-20).reverse(),
+        reviews: { due: (p.reviews || []).filter((r) => r.due <= todayStr()).length, total: (p.reviews || []).length },
+      });
+    }
+    if (req.method === 'GET' && req.url === '/api/review/list') {
+      // 듣기 복습: 복습할 때가 된 것 → 자주 틀린 것 → 최근 것 순
+      const list = (loadProgress().reviews || []).slice()
+        .sort((a, b) => (a.due <= todayStr() ? 0 : 1) - (b.due <= todayStr() ? 0 : 1) || (b.misses || 0) - (a.misses || 0) || (b.added || '').localeCompare(a.added || ''))
+        .slice(0, 30);
+      return json(res, 200, { items: list.map((r) => ({ right: r.right, meaning: r.meaning, wrong: r.wrong })) });
     }
     if (req.method === 'GET' && req.url === '/api/status') {
       return json(res, 200, { ok: true, model: MODEL, subject: subject(), busy: !!tutor.turn, active: !!tutor.abort, totals: tutor.totals,
