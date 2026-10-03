@@ -142,3 +142,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 }
 .usage { font-size: 12px; color: var(--muted); padding: 8px 0; }
 .wide-btn { width: 100%; margin-top: 12px; padding: 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); }
+
+.subject-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 4px; margin-bottom: 12px; }
+.subject-tabs button { border: none; background: none; padding: 10px; border-radius: 10px; font-size: 16px; font-weight: 600; color: var(--muted); }
+.subject-tabs button.on { background: var(--accent); color: #fff; }

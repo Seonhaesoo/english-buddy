@@ -29,6 +29,12 @@ const S = {
   sttServer: false,      // 서버 음성 인식(Google/Whisper) 사용 가능 여부
 };
 const LESSON_MS = 10 * 60 * 1000;
+const SUBJECT_INFO = {
+  en: { title: '🇺🇸 영어 회화', lang: 'en-US', flag: '🇺🇸', name: '영어', tag: 'en', preview: '안녕하세요! 오늘 하루 어땠어요? How was your day?' },
+  ja: { title: '🇯🇵 일본어 회화', lang: 'ja-JP', flag: '🇯🇵', name: '일본어', tag: 'ja', preview: '안녕하세요! 오늘 하루 어땠어요? 今日はどうでしたか?' },
+};
+S.subject = 'en';
+const target = () => SUBJECT_INFO[S.subject] || SUBJECT_INFO.en;
 
 // ------------------------------------------------------------------ UI
 
@@ -135,7 +141,7 @@ function splitByLang(text) {
   const parts = [];
   let cur = null;
   for (const ch of text) {
-    const kind = HANGUL.test(ch) ? 'ko' : /[A-Za-z]/.test(ch) ? 'en' : null;
+    const kind = HANGUL.test(ch) ? 'ko' : /[A-Za-z]/.test(ch) ? 'en' : /[\u3040-\u30FF\u4E00-\u9FFF]/.test(ch) ? 'ja' : null;
     if (kind && (!cur || cur.kind !== kind)) {
       cur = { kind, text: '' };
       parts.push(cur);
@@ -148,7 +154,7 @@ function splitByLang(text) {
 
 async function speakChunk(text, rateMul = 1) {
   for (const part of splitByLang(text)) {
-    await speakOne(part.text, part.kind === 'ko' ? 'ko-KR' : 'en-US', rateMul);
+    await speakOne(part.text, { ko: 'ko-KR', en: 'en-US', ja: 'ja-JP' }[part.kind], rateMul);
   }
 }
 
@@ -319,14 +325,16 @@ function afterSpeech() {
 }
 
 // 선생님 답 끝의 [[en]] / [[ko]] = 학생이 다음에 말할 언어
-const LANG_TAG = /\[\[(en|ko)\]\]/g;
+const LANG_TAG = /\[\[(en|ko|ja)\]\]/g;
 const stripTags = (t) => t.replace(LANG_TAG, '').replace(/\[\[?[a-z]{0,2}\]?$/, '');
 
 function setListenLang(lang) {
   S.listenLang = lang;
   const b = $('btnKo');
-  b.firstChild.textContent = lang === 'en-US' ? '🇺🇸' : '🇰🇷';
-  b.querySelector('span').textContent = lang === 'en-US' ? '영어로 듣는 중' : '한국어로 듣는 중';
+  const names = { 'ko-KR': ['🇰🇷', '한국어로 듣는 중'], 'en-US': ['🇺🇸', '영어로 듣는 중'], 'ja-JP': ['🇯🇵', '일본어로 듣는 중'] };
+  const [flag, label] = names[lang] || names['ko-KR'];
+  b.firstChild.textContent = flag;
+  b.querySelector('span').textContent = label;
 }
 
 // ------------------------------------------------------------------ 음성 인식 (STT)
@@ -410,7 +418,7 @@ async function listenRecord(lang = S.listenLang) {
   }
 
   rec.start(250);
-  setMode('listening', lang === 'en-US' ? '영어로 말해보세요… 천천히 해도 기다려요' : '말해보세요… 천천히 해도 기다려요');
+  setMode('listening', lang === 'ko-KR' ? '말해보세요… 천천히 해도 기다려요' : `${target().name}로 말해보세요… 천천히 해도 기다려요`);
 }
 
 async function handleRecording(blob, lang) {
@@ -429,7 +437,7 @@ async function handleRecording(blob, lang) {
   try {
     const r = await fetch('/api/stt', {
       method: 'POST',
-      headers: { 'Content-Type': blob.type, 'X-Lang': lang === 'en-US' ? 'en' : 'ko' },
+      headers: { 'Content-Type': blob.type, 'X-Lang': { 'en-US': 'en', 'ja-JP': 'ja' }[lang] || 'ko' },
       body: blob,
     });
     const j = await r.json();
@@ -566,7 +574,8 @@ async function ask(text, { hidden = false } = {}) {
       }
     }
     const tags = [...full.matchAll(LANG_TAG)];
-    setListenLang(tags.length && tags[tags.length - 1][1] === 'en' ? 'en-US' : 'ko-KR');
+    const lastTag = tags.length ? tags[tags.length - 1][1] : 'ko';
+    setListenLang(lastTag === 'ko' ? 'ko-KR' : target().lang);
     enqueueSpeech(stripTags(rest + pending));
     full = stripTags(full);
     bubble.textContent = full;
@@ -623,7 +632,7 @@ $('btnPreview').addEventListener('click', async () => {
   stopSpeech();
   unlockAudio();
   await wakeAudio();
-  await speakText('안녕하세요! 오늘 하루 어땠어요? How was your day?');
+  await speakText(target().preview);
 });
 
 $('btnKo').addEventListener('click', () => {
@@ -631,7 +640,7 @@ $('btnKo').addEventListener('click', () => {
   if (S.rec) { S.mode = 'idle'; stopListening(); }
   stopSpeech();
   // 듣기 언어 바꾸기 (한국어 ↔ 영어) 후 바로 듣기
-  setListenLang(S.listenLang === 'en-US' ? 'ko-KR' : 'en-US');
+  setListenLang(S.listenLang === 'ko-KR' ? target().lang : 'ko-KR');
   setTimeout(() => listen(), 150);
 });
 
@@ -655,6 +664,12 @@ function showScreen(name) {
   window.scrollTo(0, 0);
 }
 
+const LEVEL_DESC_JA = [
+  '', '인사말이나 단어 몇 개', 'はじめまして 같은 정해진 짧은 문장', 'です・ます로 내 얘기 조금 (N5 초반)',
+  '과거형도 쓰지만 조사·활용 실수가 많음 (N5)', '쉬운 질문에 2~3문장으로 대답 (N4 초반)', 'て형으로 잇고 から로 이유를 말함 (N4)',
+  '경험과 계획을 말함 (N3 초반)', '내 의견을 자연스럽게 (N3)', '긴 대화를 스스로 이어감 (N2)', '원어민과 자유로운 일상 대화 (N1)',
+];
+const levelDesc = (lv) => (S.subject === 'ja' ? LEVEL_DESC_JA : LEVEL_DESC)[lv] || '';
 const LEVEL_DESC = [
   '', '영어 인사나 단어 몇 개', '아주 짧은 정해진 문장', '현재형 짧은 문장으로 내 얘기',
   '과거형도 쓰지만 실수가 많음', '쉬운 질문에 2~3문장으로 대답', '이유를 말하고 시제가 대체로 맞음',
@@ -669,13 +684,16 @@ async function loadHome() {
     const lv = p.plan.level;
     $('levelNum').textContent = lv ?? '-';
     $('levelBar').innerHTML = Array.from({ length: 10 }, (_, i) => `<i class="${lv && i < lv ? 'on' : ''}"></i>`).join('');
-    $('levelDesc').textContent = lv ? LEVEL_DESC[lv] : '첫 수업에서 레벨을 알아봐요';
+    $('levelDesc').textContent = lv ? levelDesc(lv) : '첫 수업에서 레벨을 알아봐요';
     $('nextLabel').textContent = `${p.plan.lessonNo}번째 수업 · 오늘의 주제`;
     $('nextFocus').textContent = p.plan.focus;
     $('history').innerHTML = p.lessons.length
       ? p.lessons.map((l) => `<div class="h-item"><div class="h-top"><span>${esc(l.date)}</span><span class="h-level">레벨 ${l.level}</span></div><div class="h-sum">${esc(l.summary)}</div></div>`).join('')
       : '<div class="empty">아직 수업 기록이 없어요</div>';
     S.plan = p.plan;
+    if (p.plan.subject) S.subject = p.plan.subject;
+    $('appTitle').textContent = target().title;
+    document.querySelectorAll('[data-subject]').forEach((b) => b.classList.toggle('on', b.dataset.subject === S.subject));
   } catch {}
 }
 
@@ -695,7 +713,7 @@ async function startLesson() {
   $('lessonTitle').textContent = `${plan.lessonNo || ''}번째 수업`;
   showScreen('lesson');
   tickTimer();
-  ask(`[수업 시작. ${plan.lessonNo}번째 수업이야. 한국어로 짧게 반갑게 인사하고, 지난 수업 기록이 있으면 짧게 복습한 뒤, 오늘의 주제로 아주 쉬운 영어 질문 하나를 해.]`, { hidden: true });
+  ask(`[수업 시작. ${plan.lessonNo}번째 수업이야. 한국어로 짧게 반갑게 인사하고, 지난 수업 기록이 있으면 짧게 복습한 뒤, 오늘의 주제로 아주 쉬운 ${target().name} 질문 하나를 해.]`, { hidden: true });
 }
 
 function tickTimer() {
@@ -744,7 +762,7 @@ async function finishLesson() {
       <div class="label">오늘 레벨</div>
       <div class="big">${ev.level} <span class="level-max">/ 10</span></div>
       <div class="change ${diff > 0 ? 'up' : ''}">${change}</div>
-      <div class="level-desc">${esc(LEVEL_DESC[ev.level])}</div>
+      <div class="level-desc">${esc(levelDesc(ev.level))}</div>
     </div>
     <div class="card">
       <div class="r-sec"><div class="label">오늘 한 것</div><p>${esc(ev.summary)}</p></div>
@@ -757,6 +775,15 @@ async function finishLesson() {
 }
 
 $('btnStart').addEventListener('click', startLesson);
+document.querySelectorAll('[data-subject]').forEach((b) => b.addEventListener('click', async () => {
+  if (b.dataset.subject === S.subject) return;
+  S.subject = b.dataset.subject;
+  document.querySelectorAll('[data-subject]').forEach((x) => x.classList.toggle('on', x === b));
+  await fetch('/api/subject', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subject: S.subject }),
+  }).catch(() => {});
+  loadHome();
+}));
 $('btnHome').addEventListener('click', () => { S.phase = 'home'; showScreen('home'); loadHome(); });
 $('btnEnd').addEventListener('click', () => {
   if (S.phase !== 'lesson') return;

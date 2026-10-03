@@ -40,9 +40,9 @@ function childEnv() {
   }
   return env;
 }
-const PROGRESS_FILE = path.join(__dirname, 'progress.json'); // 수업 기록 (레벨, 실수, 다음 주제)
+// 수업 기록 (레벨, 실수, 다음 주제)은 과목별 파일에 따로 쌓인다
 
-const BASE_PROMPT = `너는 한국인 학생 1명과 "전화영어" 수업을 하는 1:1 영어 과외 선생님이야. 한국어도 원어민처럼 잘해. 음성으로만 대화해.
+const PROMPT_EN = `너는 한국인 학생 1명과 "전화영어" 수업을 하는 1:1 영어 과외 선생님이야. 한국어도 원어민처럼 잘해. 음성으로만 대화해.
 학생은 영어 완전 초보야. 운전 중일 수 있어서 화면을 볼 수 없어.
 
 수업 목표:
@@ -102,13 +102,84 @@ const BASE_PROMPT = `너는 한국인 학생 1명과 "전화영어" 수업을 �
 10 원어민과 일상 대화를 자유롭게 함
 학생 레벨에 맞춰 질문 난이도와 한국어 비중을 조절해. 레벨 1~3은 한국어 설명을 넉넉히, 6 이상은 영어 위주로.`;
 
+const PROMPT_JA = `너는 한국인 학생 1명과 "전화 일본어" 수업을 하는 1:1 일본어 회화 과외 선생님이야. 한국어도 원어민처럼 잘해. 음성으로만 대화해.
+학생은 일본어 완전 초보야(히라가나를 막 배우기 시작한 단계). 운전 중일 수 있어서 화면을 볼 수 없어.
+
+수업 목표:
+- 강의가 아니라 "대화"야. 학생이 최대한 많이 말하게 만드는 게 목표야. 네 말은 짧게, 학생 말은 길게.
+- 학생의 실제 일상(오늘 뭐 했는지, 지금 어디 가는지, 먹은 것, 일, 가족, 주말, 취미, 기분)을 진짜 궁금해하면서 물어봐.
+- 기본은 정중한 です・ます체로 가르쳐.
+
+한 턴의 흐름 (항상 이 순서):
+1. 학생이 말한 "내용"에 먼저 진짜로 반응해. 공감, 맞장구, 짧은 내 얘기나 의견. 예: 와 아침부터 운전하느라 피곤하겠어요.
+2. 학생이 일본어로 말했는데 틀린 곳이 있으면 교정해. (아래 교정 규칙)
+3. 대화를 이어가는 쉬운 일본어 질문 하나. 바로 뒤에 한국어 뜻을 짧게 붙여. 예: 昼ごはんは何を食べましたか? 점심에 뭐 먹었어요?
+
+교정 규칙 (중요, 그냥 넘어가지 마):
+- 학생이 말한 틀린 부분을 그대로 짚어줘. 예: 방금 昨日会社に行きます 라고 했죠.
+- 왜 틀렸는지 한국어로 한 문장. 예: 어제 일이니까 行きます 대신 과거형 行きました를 써요.
+- 맞는 문장 전체를 말해줘. 예: 昨日会社に行きました.
+- 한번 다시 말해보라고 해. 이때는 다음 질문 대신 다시 말하기를 요청하고 끝내.
+- 학생이 다시 말하면 맞았는지 짧게 확인하고(틀렸으면 다시 한 번만 도와줘), 원래 대화로 돌아가서 질문해.
+- 한 번에 가장 중요한 실수 1개, 많아도 2개만. 조사(は/が/を/に), 동사 활용, 시제를 우선으로 봐. 사소한 건 넘어가.
+- 맞게 말했으면 뭐가 좋았는지 구체적으로 칭찬해. 예: 과거형 ました 완벽해요.
+- 문법은 맞는데 어색하면 더 자연스러운 표현을 하나 알려줘.
+
+학생이 한국어로 대답하거나 막히면:
+- 그 내용을 일본어로 어떻게 말하는지 짧은 문장으로 알려주고, 말해보게 해.
+- 단어를 몰라서 막힌 것 같으면 그 단어만 알려줘.
+- 한국어와 비슷한 단어나 문법(어순, 조사)이 있으면 그걸 활용해서 쉽게 설명해.
+
+수준 조절:
+- 처음엔 아주 쉬운 질문(はい/いいえ, 한두 단어로 답할 수 있는 것)부터.
+- 학생이 잘하면 조금씩 열린 질문(なぜ, 何, どう)으로. 한국어 뜻은 점점 줄여.
+- "천천히", "다시", "모르겠어" 라고 하면 더 쉽게 다시 말해줘.
+- 학생 말은 음성 인식으로 들어와서 엉뚱한 단어가 섞일 수 있어. 뜻을 짐작해서 받아주고, 인식 오류로 보이는 건 교정하지 마.
+- 학생 말이 히라가나로 적히든 한자로 적히든 그건 음성 인식이 정한 표기라 상관없어. 한자·가나 표기나 띄어쓰기는 절대 지적하지 마. 소리로 들리는 말만 교정해.
+
+말하는 형식 (전부 소리로 읽힘):
+- 짧게. 보통 2~4문장.
+- 마크다운, 목록, 이모지, 괄호, 따옴표, 로마자 표기, 한글 발음 표기 쓰지 마. 일본어는 일본어 글자로 문장 안에 그냥 써.
+- 한국어 문장과 일본어 문장은 가능하면 문장 단위로 나눠서 써. 한 문장 안에 섞을 때도 일본어 부분은 한 덩어리로.
+- 화면을 보라거나 읽거나 쓰라고 하지 마.
+
+듣기 언어 표시 (꼭 지켜):
+- 답의 맨 끝에 학생이 다음에 어떤 언어로 말할지 표시를 하나 붙여.
+- 학생이 일본어로 대답하거나 따라 말해야 하면 [[ja]], 한국어로 대답하면 되면 [[ko]]
+- 회화 연습이니까 대부분 [[ja]] 야. 학생이 계속 막히면 그때만 [[ko]].
+
+수업 형식 (한 번에 10분):
+- 시작: 반갑게 인사하고, 지난 수업 기록이 있으면 지난번에 틀린 표현 하나를 다시 말해보게 하며 짧게 복습해.
+- 본론: 오늘의 주제로 일상 대화. 오늘 주제와 관련된 표현을 자연스럽게 여러 번 쓰게 해.
+- 끝: 앱이 수업 종료를 알려주면 마무리해. 그 전에는 먼저 끝내지 마.
+
+학생 레벨 기준 (1~10):
+1 일본어 인사나 단어 몇 개만 말함
+2 はじめまして, よろしくお願いします 같은 정해진 짧은 문장만
+3 です・ます로 자기 얘기를 조금 (N5 초반)
+4 과거형 ました도 쓰지만 조사·활용 실수가 많음 (N5)
+5 쉬운 질문에 2~3문장으로 대답 (N4 초반)
+6 て형으로 문장을 잇고 から로 이유를 말함 (N4)
+7 경험과 계획을 말할 수 있음 (N3 초반)
+8 자기 의견을 자연스러운 표현으로 말함 (N3)
+9 긴 대화를 스스로 이어감 (N2)
+10 원어민과 일상 대화를 자유롭게 함 (N1)
+학생 레벨에 맞춰 질문 난이도와 한국어 비중을 조절해. 레벨 1~3은 한국어 설명을 넉넉히, 6 이상은 일본어 위주로.`;
+
+const SUBJECTS = {
+  en: { name: '영어', prompt: PROMPT_EN, file: 'progress.json', firstFocus: '자기소개와 오늘 하루 이야기 (첫 수업이라 레벨 파악)' },
+  ja: { name: '일본어', prompt: PROMPT_JA, file: 'progress-ja.json', firstFocus: '인사와 자기소개 (첫 수업이라 레벨 파악)' },
+};
+function subject() { const v = loadSettings().subject; return SUBJECTS[v] ? v : 'en'; }
+const progressFile = () => path.join(__dirname, SUBJECTS[subject()].file);
+
 const EVAL_PROMPT = `[수업 종료. 이번 응답은 학생에게 들리지 않는 기록용이야.]
 오늘 수업 대화 전체를 보고 학생을 평가해서 아래 JSON 하나만 출력해. 다른 글, 코드블록, [[en]] 표시는 쓰지 마.
 {"level": 1~10 정수, "summary": "오늘 한 대화 한 줄 요약", "good": "잘한 점 한 줄", "improve": "가장 먼저 고칠 점 한 줄", "mistakes": ["학생이 말한 틀린 문장 → 맞는 문장", 최대 5개], "next_focus": "다음 수업에서 연습할 주제와 표현 한 줄"}
-모든 설명은 한국어로. 레벨은 위의 레벨 기준으로, 오늘 실제로 말한 영어만 보고 정해.`;
+모든 설명은 한국어로. 레벨은 위의 레벨 기준으로, 오늘 학생이 실제로 말한 외국어(배우는 언어)만 보고 정해.`;
 
 function loadProgress() {
-  try { return JSON.parse(fs.readFileSync(PROGRESS_FILE, 'utf8')); } catch { return { lessons: [] }; }
+  try { return JSON.parse(fs.readFileSync(progressFile(), 'utf8')); } catch { return { lessons: [] }; }
 }
 
 function currentPlan() {
@@ -117,7 +188,8 @@ function currentPlan() {
   return {
     lessonNo: lessons.length + 1,
     level: last?.level ?? null,
-    focus: last?.next_focus || '자기소개와 오늘 하루 이야기 (첫 수업이라 레벨 파악)',
+    focus: last?.next_focus || SUBJECTS[subject()].firstFocus,
+    subject: subject(),
   };
 }
 
@@ -181,7 +253,7 @@ class Tutor {
       prompt: input(),
       options: {
         model: MODEL,
-        systemPrompt: BASE_PROMPT + loadLearnerNotes(),
+        systemPrompt: SUBJECTS[subject()].prompt + loadLearnerNotes(),
         tools: [],
         settingSources: [],
         includePartialMessages: true,
@@ -270,7 +342,7 @@ class Tutor {
     ev.turns = this.lessonTurns;
     const p = loadProgress();
     p.lessons.push(ev);
-    fs.writeFileSync(PROGRESS_FILE, JSON.stringify(p, null, 2));
+    fs.writeFileSync(progressFile(), JSON.stringify(p, null, 2));
     this.stop();
     return ev;
   }
@@ -304,13 +376,36 @@ function addTtsUsage(n) {
 class TtsLimitError extends Error {}
 
 // Google Cloud: 문장 전체를 한 번에 받는다(보통 1초 이내). LINEAR16 = WAV 헤더 + 24kHz PCM
+// 한글이 있는 덩어리 → 한국어, 가나·한자 덩어리 → 일본어. 숫자·기호·공백은 앞 덩어리에 붙인다.
+function splitKoJa(text) {
+  const parts = [];
+  let cur = null;
+  for (const ch of text) {
+    const kind = /[\u3131-\uD79D]/.test(ch) ? 'ko-KR' : /[\u3040-\u30FF\u4E00-\u9FFF\uFF66-\uFF9F]/.test(ch) ? 'ja-JP' : null;
+    if (kind && (!cur || cur.lc !== kind)) { cur = { lc: kind, text: '' }; parts.push(cur); }
+    if (cur) cur.text += ch; else parts.push((cur = { lc: 'ko-KR', text: ch }));
+  }
+  return parts.filter((p) => p.text.trim());
+}
+
 async function synthesizeGoogle(text, voice) {
+  if (subject() === 'ja') {
+    const parts = splitKoJa(text);
+    if (parts.length > 1 || parts[0]?.lc === 'ja-JP') {
+      const pcms = await Promise.all(parts.map((p) => synthesizeGoogleOne(p.text, voice, p.lc)));
+      return Buffer.concat(pcms);
+    }
+  }
+  return synthesizeGoogleOne(text, voice, 'ko-KR');
+}
+
+async function synthesizeGoogleOne(text, voice, lc) {
   const r = await fetch('https://texttospeech.googleapis.com/v1/text:synthesize', {
     method: 'POST',
     headers: { 'x-goog-api-key': process.env.GOOGLE_TTS_API_KEY, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       input: { text },
-      voice: { languageCode: 'ko-KR', name: 'ko-KR-Chirp3-HD-' + voice },
+      voice: { languageCode: lc, name: lc + '-Chirp3-HD-' + voice },
       audioConfig: { audioEncoding: 'LINEAR16', sampleRateHertz: 24000 },
     }),
   });
@@ -474,8 +569,12 @@ function readRaw(req, limit = 8 * 1024 * 1024) {
 // Gemini: "고치지 말고 들린 그대로" 받아쓰기. 초보의 문법 실수를 그대로 남겨야 선생님이 교정할 수 있다.
 // (Google 음성 인식은 I eat yesterday 를 I ate 로 고쳐버리는 경우가 있음)
 const STT_GEMINI_MODEL = process.env.STT_GEMINI_MODEL || 'gemini-3.5-flash-lite';
-const STT_PROMPT = `Transcribe this audio exactly as spoken, word for word. The speaker is a Korean beginner learning English and may mix Korean and English.
-Rules: keep every grammar mistake exactly as spoken (do NOT correct "I eat yesterday" to "I ate"). Write English words in English letters and Korean words in Hangul. Do not translate. Output only the transcript. If there is no clear speech, output nothing.`;
+const STT_PROMPTS = {
+  en: `Transcribe this audio exactly as spoken, word for word. The speaker is a Korean beginner learning English and may mix Korean and English.
+Rules: keep every grammar mistake exactly as spoken (do NOT correct "I eat yesterday" to "I ate"). Write English words in English letters and Korean words in Hangul. Do not translate. Output only the transcript. If there is no clear speech, output nothing.`,
+  ja: `Transcribe this audio exactly as spoken, word for word. The speaker is a Korean beginner learning Japanese and may mix Korean and Japanese.
+Rules: keep every grammar, particle and conjugation mistake exactly as spoken (do NOT correct 昨日行きます to 昨日行きました). Write Japanese in natural Japanese script (kana and common kanji) and Korean in Hangul. Do not translate. Output only the transcript. If there is no clear speech, output nothing.`,
+};
 
 async function sttGemini(audio, lang, mime) {
   const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${STT_GEMINI_MODEL}:generateContent`, {
@@ -483,7 +582,7 @@ async function sttGemini(audio, lang, mime) {
     headers: { 'x-goog-api-key': process.env.GEMINI_API_KEY, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       contents: [{ parts: [
-        { text: STT_PROMPT + (lang === 'en' ? '\nThe speaker is trying to speak English right now.' : '') },
+        { text: STT_PROMPTS[subject()] + (lang === 'en' ? '\nThe speaker is trying to speak English right now.' : lang === 'ja' ? '\nThe speaker is trying to speak Japanese right now.' : '') },
         { inline_data: { mime_type: mime, data: audio.toString('base64') } },
       ] }],
       generationConfig: { temperature: 0 },
@@ -499,7 +598,8 @@ async function sttGemini(audio, lang, mime) {
 const sttCooldown = {};
 
 async function sttGoogle(audio, lang) {
-  const primary = lang === 'en' ? 'en-US' : 'ko-KR';
+  const target = subject() === 'ja' ? 'ja-JP' : 'en-US';
+  const primary = lang === 'en' ? 'en-US' : lang === 'ja' ? 'ja-JP' : 'ko-KR';
   // 녹음 파일 머리말(OpusHead)에서 채널 수를 읽어 그대로 알려줘야 한다 (폰마다 1 또는 2)
   const head = audio.indexOf('OpusHead');
   const channels = head >= 0 ? audio[head + 9] || 1 : 1;
@@ -511,7 +611,7 @@ async function sttGoogle(audio, lang) {
         encoding: 'WEBM_OPUS',
         audioChannelCount: channels,
         languageCode: primary,
-        alternativeLanguageCodes: [primary === 'en-US' ? 'ko-KR' : 'en-US'],
+        alternativeLanguageCodes: [primary === 'ko-KR' ? target : 'ko-KR'],
         enableAutomaticPunctuation: true,
       },
       audio: { content: audio.toString('base64') },
@@ -540,7 +640,7 @@ async function sttWhisper(audio, lang) {
   try {
     await run('ffmpeg', ['-y', '-loglevel', 'error', '-i', base + '.webm', '-ar', '16000', '-ac', '1', base + '.wav']);
     const threads = String(Math.min(8, Math.max(2, os.cpus().length)));
-    const out = await run(WHISPER_BIN, ['-m', WHISPER_MODEL, '-f', base + '.wav', '-l', lang === 'en' ? 'en' : 'auto', '-nt', '-np', '-t', threads]);
+    const out = await run(WHISPER_BIN, ['-m', WHISPER_MODEL, '-f', base + '.wav', '-l', lang === 'en' || lang === 'ja' ? lang : 'auto', '-nt', '-np', '-t', threads]);
     return out.replace(/\[[^\]]*\]/g, '').replace(/\s+/g, ' ').trim();
   } finally {
     for (const ext of ['.webm', '.wav']) fs.rmSync(base + ext, { force: true });
@@ -556,7 +656,7 @@ function sttEngines() {
 }
 
 async function handleStt(req, res) {
-  const lang = req.headers['x-lang'] === 'en' ? 'en' : 'ko';
+  const lang = ['en', 'ja'].includes(req.headers['x-lang']) ? req.headers['x-lang'] : 'ko';
   const audio = await readRaw(req);
   if (audio.length < 1000) return json(res, 200, { text: '', engine: null });
   const engines = sttEngines();
@@ -656,11 +756,18 @@ const server = http.createServer(async (req, res) => {
       }
     }
     if (req.method === 'POST' && req.url === '/api/stt') return await handleStt(req, res);
+    if (req.method === 'POST' && req.url === '/api/subject') {
+      const { subject: sub } = JSON.parse((await readBody(req)) || '{}');
+      if (!SUBJECTS[sub]) return json(res, 400, { error: 'unknown subject' });
+      fs.writeFileSync(SETTINGS_FILE, JSON.stringify({ ...loadSettings(), subject: sub }));
+      tutor.reset();
+      return json(res, 200, currentPlan());
+    }
     if (req.method === 'GET' && req.url === '/api/progress') {
       return json(res, 200, { plan: currentPlan(), lessons: loadProgress().lessons.slice(-20).reverse() });
     }
     if (req.method === 'GET' && req.url === '/api/status') {
-      return json(res, 200, { ok: true, model: MODEL, busy: !!tutor.turn, active: !!tutor.abort, totals: tutor.totals,
+      return json(res, 200, { ok: true, model: MODEL, subject: subject(), busy: !!tutor.turn, active: !!tutor.abort, totals: tutor.totals,
         tts: TTS_PROVIDER ? {
           provider: TTS_PROVIDER, voice: ttsVoice(), voices: TTS_VOICES,
           used: TTS_PROVIDER === 'google' ? ttsUsage() : null, limit: TTS_MONTHLY_LIMIT,
