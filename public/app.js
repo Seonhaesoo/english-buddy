@@ -819,7 +819,7 @@ async function checkServer() {
     if (s.tts && document.activeElement !== $('aiVoice')) $('aiVoice').value = s.tts.voice;
     $('sysVoices').hidden = !!s.tts;
     S.sttServer = !!s.stt?.engines?.length;
-    const sttName = { google: 'Google', whisper: 'Whisper(폰)' };
+    const sttName = { gemini: 'Gemini', google: 'Google', whisper: 'Whisper(폰)' };
     $('sttInfo').textContent = s.stt
       ? `음성 인식: ${s.stt.engines.map((e) => sttName[e]).join(' → ') || '크롬 기본'}` +
         (s.stt.googleSeconds != null ? ` · Google 이번 달 ${Math.floor(s.stt.googleSeconds / 60)} / ${Math.floor(s.stt.googleLimit / 60)}분 (넘으면 Whisper)` : '')

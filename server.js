@@ -471,14 +471,45 @@ function readRaw(req, limit = 8 * 1024 * 1024) {
   });
 }
 
+// Gemini: "고치지 말고 들린 그대로" 받아쓰기. 초보의 문법 실수를 그대로 남겨야 선생님이 교정할 수 있다.
+// (Google 음성 인식은 I eat yesterday 를 I ate 로 고쳐버리는 경우가 있음)
+const STT_GEMINI_MODEL = process.env.STT_GEMINI_MODEL || 'gemini-3.5-flash-lite';
+const STT_PROMPT = `Transcribe this audio exactly as spoken, word for word. The speaker is a Korean beginner learning English and may mix Korean and English.
+Rules: keep every grammar mistake exactly as spoken (do NOT correct "I eat yesterday" to "I ate"). Write English words in English letters and Korean words in Hangul. Do not translate. Output only the transcript. If there is no clear speech, output nothing.`;
+
+async function sttGemini(audio, lang, mime) {
+  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${STT_GEMINI_MODEL}:generateContent`, {
+    method: 'POST',
+    headers: { 'x-goog-api-key': process.env.GEMINI_API_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ parts: [
+        { text: STT_PROMPT + (lang === 'en' ? '\nThe speaker is trying to speak English right now.' : '') },
+        { inline_data: { mime_type: mime, data: audio.toString('base64') } },
+      ] }],
+      generationConfig: { temperature: 0 },
+    }),
+  });
+  const body = await r.json().catch(() => ({}));
+  if (r.status === 429) throw Object.assign(new Error('Gemini 받아쓰기 무료 한도 초과'), { limited: true });
+  if (!r.ok) throw new Error(`Gemini STT ${r.status}: ${body.error?.message || ''}`.slice(0, 300));
+  return (body.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('').trim();
+}
+
+// 한도에 걸린 엔진은 한동안 건너뛴다 (매번 실패를 기다리면 느려지니까)
+const sttCooldown = {};
+
 async function sttGoogle(audio, lang) {
   const primary = lang === 'en' ? 'en-US' : 'ko-KR';
+  // 녹음 파일 머리말(OpusHead)에서 채널 수를 읽어 그대로 알려줘야 한다 (폰마다 1 또는 2)
+  const head = audio.indexOf('OpusHead');
+  const channels = head >= 0 ? audio[head + 9] || 1 : 1;
   const r = await fetch('https://speech.googleapis.com/v1p1beta1/speech:recognize', {
     method: 'POST',
     headers: { 'x-goog-api-key': GOOGLE_KEY, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       config: {
         encoding: 'WEBM_OPUS',
+        audioChannelCount: channels,
         languageCode: primary,
         alternativeLanguageCodes: [primary === 'en-US' ? 'ko-KR' : 'en-US'],
         enableAutomaticPunctuation: true,
@@ -518,6 +549,7 @@ async function sttWhisper(audio, lang) {
 
 function sttEngines() {
   const list = [];
+  if (process.env.GEMINI_API_KEY && !(sttCooldown.gemini > Date.now())) list.push('gemini');
   if (GOOGLE_KEY && sttUsage() < STT_MONTHLY_SECONDS) list.push('google');
   if (hasWhisper()) list.push('whisper');
   return list;
@@ -533,10 +565,14 @@ async function handleStt(req, res) {
   for (const engine of engines) {
     try {
       const t0 = Date.now();
-      const text = engine === 'google' ? await sttGoogle(audio, lang) : await sttWhisper(audio, lang);
+      const mime = String(req.headers['content-type'] || 'audio/webm').split(';')[0];
+      const text = engine === 'gemini' ? await sttGemini(audio, lang, mime)
+        : engine === 'google' ? await sttGoogle(audio, lang)
+        : await sttWhisper(audio, lang);
       return json(res, 200, { text, engine, ms: Date.now() - t0 });
     } catch (err) {
-      console.error('[stt]', err.message);
+      console.error('[stt]', engine, err.message);
+      if (err.limited) sttCooldown[engine] = Date.now() + 60 * 60 * 1000; // 1시간 뒤 다시 시도
       lastErr = err;
     }
   }
